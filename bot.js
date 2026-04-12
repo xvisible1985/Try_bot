@@ -211,7 +211,9 @@ bot.onText(/\/mutes/, (msg) => {
 
 // --- Pig ---
 bot.onText(/\/pig(?:\s+(\S+))?/, async (msg, match) => {
+  console.log('pig command, match:', JSON.stringify(match));
   const user = await resolveUser(msg, match);
+  console.log('pig resolved:', user);
   if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение или укажи @username', threadOpts(msg));
   if (user.id === bot.id) return;
 
