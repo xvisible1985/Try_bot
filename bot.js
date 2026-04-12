@@ -64,6 +64,9 @@ function filterProfanity(text) {
   if (!text) return text;
   let result = text;
   let replaced = false;
+  // Replace words containing special chars between letters (e.g. х*й, п@зда)
+  const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s][а-яёА-ЯЁa-zA-Z]\S*/g;
+  result = result.replace(specialInWord, () => { replaced = true; return 'Хрю-хрю'; });
   for (const word of BAD_WORDS) {
     const re = new RegExp(fuzzyPattern(word), 'gi');
     if (re.test(result)) {
