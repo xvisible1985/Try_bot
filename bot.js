@@ -37,16 +37,35 @@ const BAD_WORDS = [
   'блять','бля','блядь','сука','хуй','пизд','ебат','ебан','ебать',
   'нахуй','пиздец','заеб','уеб','отъеб','выеб','разъеб','приеб',
   'долбоёб','долбоеб','ёбан','еблан','пидор','пидар','мудак','мудила',
-  'шлюх','дерьм','говн','жоп','хер','залуп','ёпт','блять','ёб','ёбан',
-  'сукa','бляядь','бляяя','пизд','пиздa'
+  'шлюх','дерьм','говн','жоп','хер','залуп','ёпт','ёб',
+  'сукa','бляядь','бляяя','пиздa'
 ];
+
+// fuzzy: allow repeated chars and common substitutions (а/@, о/0, е/3, и/4, etc.)
+function fuzzyPattern(word) {
+  const subs = {
+    'а': '[а@4a]', 'о': '[о0o]', 'е': '[еe3ё]', 'и': '[иu4]',
+    'с': '[сc]', 'р': '[рp]', 'к': '[кk]', 'х': '[хx]',
+    'в': '[вb]', 'м': '[мm]', 'т': '[тt]', 'н': '[нh]',
+    'з': '[з3]', 'д': '[д]', 'я': '[я]', 'ю': '[ю]',
+    'у': '[уy]', 'г': '[гr]', 'л': '[л]', 'п': '[п]',
+    'б': '[б6]', 'ж': '[ж]', 'ф': '[ф]', 'ч': '[ч]',
+    'ш': '[ш]', 'щ': '[щ]', 'ц': '[ц]', 'ъ': '[ъ]',
+    'ь': '[ь]', 'ы': '[ы]', 'э': '[э]',
+  };
+  return word.split('').map(c => {
+    const lower = c.toLowerCase();
+    const pattern = subs[lower] || `[${c}${c.toLowerCase()}${c.toUpperCase()}]`;
+    return pattern + '+'; // allow repeated chars
+  }).join('[^а-яa-z0-9]*');
+}
 
 function filterProfanity(text) {
   if (!text) return text;
   let result = text;
   let replaced = false;
   for (const word of BAD_WORDS) {
-    const re = new RegExp(word.replace(/[а-яё]/gi, (c) => `[${c}${c.toUpperCase()}]`), 'gi');
+    const re = new RegExp(fuzzyPattern(word), 'gi');
     if (re.test(result)) {
       result = result.replace(re, () => { replaced = true; return 'Хрю-хрю'; });
     }
@@ -259,7 +278,8 @@ bot.on('message', async (msg) => {
     const { text, replaced } = filterProfanity(msg.text);
     if (replaced) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-      bot.sendMessage(msg.chat.id, `🐷 ${text}`, threadOpts(msg)).catch(() => {});
+      const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      bot.sendMessage(msg.chat.id, `🐷 ${nick}: ${text}`, threadOpts(msg)).catch(() => {});
     }
   }
 });
