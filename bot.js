@@ -149,12 +149,12 @@ async function getDisplayName(msg) {
 async function resolveUser(msg, match) {
   // из reply
   if (msg.reply_to_message) return { id: msg.reply_to_message.from.id, username: msg.reply_to_message.from.username || msg.reply_to_message.from.first_name };
-  // из текста @username
+  // из текста @username — ищем через getChatMember
   const m = match[1]?.match(/@(\w+)/);
   if (m) {
     try {
-      const chat = await bot.getChat('@' + m[1]);
-      return { id: chat.id, username: chat.username || chat.first_name };
+      const member = await bot.getChatMember(msg.chat.id, '@' + m[1]);
+      return { id: member.user.id, username: member.user.username || member.user.first_name };
     } catch {}
   }
   return null;
