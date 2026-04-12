@@ -152,6 +152,15 @@ async function resolveUser(msg, match) {
   return null;
 }
 
+async function isAdmin(msg) {
+  try {
+    const member = await bot.getChatMember(msg.chat.id, msg.from.id);
+    return ['creator', 'administrator'].includes(member.status);
+  } catch {
+    return false;
+  }
+}
+
 // --- Commands ---
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, 'привет я бот');
@@ -174,8 +183,9 @@ bot.onText(/\/names/, async (msg) => {
 
 // --- Mute ---
 bot.onText(/\/mute(?:\s+(\S+))?/, async (msg, match) => {
+  if (!await isAdmin(msg)) return;
   const user = await resolveUser(msg, match);
-  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение или укажи @username', threadOpts(msg));
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
   if (user.id === bot.id) return;
 
   const duration = parseDuration(match[1]?.replace(/@\w+\s*/, ''));
@@ -187,8 +197,9 @@ bot.onText(/\/mute(?:\s+(\S+))?/, async (msg, match) => {
 });
 
 bot.onText(/\/unmute(?:\s+(\S+))?/, async (msg, match) => {
+  if (!await isAdmin(msg)) return;
   const user = await resolveUser(msg, match);
-  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение или укажи @username', threadOpts(msg));
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
 
   unmuteUser(user.id);
   bot.sendMessage(msg.chat.id, `${user.username} размучен`, threadOpts(msg));
@@ -203,6 +214,7 @@ bot.onText(/\/mutes/, (msg) => {
 
 // --- Pig ---
 bot.onText(/\/pig(?:\s+(\S+))?/, async (msg, match) => {
+  if (!await isAdmin(msg)) return;
   const user = await resolveUser(msg, match);
   if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
   if (user.id === bot.id) return;
@@ -216,8 +228,9 @@ bot.onText(/\/pig(?:\s+(\S+))?/, async (msg, match) => {
 });
 
 bot.onText(/\/unpig(?:\s+(\S+))?/, async (msg, match) => {
+  if (!await isAdmin(msg)) return;
   const user = await resolveUser(msg, match);
-  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение или укажи @username', threadOpts(msg));
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
 
   db.prepare('DELETE FROM pigs WHERE user_id = ?').run(user.id);
   bot.sendMessage(msg.chat.id, `${user.username} больше не 🐷`, threadOpts(msg));
