@@ -149,14 +149,6 @@ async function getDisplayName(msg) {
 async function resolveUser(msg, match) {
   // из reply
   if (msg.reply_to_message) return { id: msg.reply_to_message.from.id, username: msg.reply_to_message.from.username || msg.reply_to_message.from.first_name };
-  // из текста @username — ищем через getChatMember
-  const m = match[1]?.match(/@(\w+)/);
-  if (m) {
-    try {
-      const member = await bot.getChatMember(msg.chat.id, '@' + m[1]);
-      return { id: member.user.id, username: member.user.username || member.user.first_name };
-    } catch {}
-  }
   return null;
 }
 
@@ -211,10 +203,8 @@ bot.onText(/\/mutes/, (msg) => {
 
 // --- Pig ---
 bot.onText(/\/pig(?:\s+(\S+))?/, async (msg, match) => {
-  console.log('pig command, match:', JSON.stringify(match));
   const user = await resolveUser(msg, match);
-  console.log('pig resolved:', user);
-  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение или укажи @username', threadOpts(msg));
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
   if (user.id === bot.id) return;
 
   const byName = await getDisplayName(msg);
