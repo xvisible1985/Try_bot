@@ -259,7 +259,7 @@ bot.on('message', async (msg) => {
     const { text, replaced } = filterProfanity(msg.text);
     if (replaced) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-      bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
+      bot.sendMessage(msg.chat.id, `🐷 ${text}`, threadOpts(msg)).catch(() => {});
     }
   }
 });
