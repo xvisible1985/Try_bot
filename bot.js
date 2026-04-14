@@ -317,9 +317,15 @@ bot.onText(/\/human\b/, async (msg) => {
   if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
 
   const existing = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+  const wasRamzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(user.id);
   db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM ramzans WHERE user_id = ?').run(user.id);
 
-  const wasMsg = existing ? ` (был ${ANIMALS[existing.animal]?.emoji || existing.animal})` : '';
+  const tags = [
+    existing ? (ANIMALS[existing.animal]?.emoji || existing.animal) : null,
+    wasRamzan ? 'Дон' : null,
+  ].filter(Boolean);
+  const wasMsg = tags.length ? ` (был ${tags.join(', ')})` : '';
   bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь человек 🧑`, threadOpts(msg));
 });
 
