@@ -64,8 +64,8 @@ function filterProfanity(text) {
   if (!text) return text;
   let result = text;
   let replaced = false;
-  // Replace words containing special chars between letters (e.g. х*й, п@зда)
-  const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s][а-яёА-ЯЁa-zA-Z]\S*/g;
+  // Replace words containing special chars between letters (e.g. х*й, п@зда), ignore hyphen (кое-как)
+  const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
   result = result.replace(specialInWord, () => { replaced = true; return 'Хрю-хрю'; });
   for (const word of BAD_WORDS) {
     const re = new RegExp(fuzzyPattern(word), 'gi');
@@ -318,6 +318,22 @@ bot.onText(/^\*\*(?: (.+))?/, async (msg, match) => {
   bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
   bot.sendMessage(msg.chat.id, `${username} 🟣 <b><i>${text}</i></b>`, threadOpts(msg, { parse_mode: 'HTML', ...(replyTo ? { reply_to_message_id: replyTo } : {}) }));
 });
+
+// --- Animal commands ---
+const ANIMAL_SOUNDS = {
+  cat:    { emoji: '🐱', sound: 'мяяяяяууу' },
+  fox:    { emoji: '🦊', sound: 'фыр-фыр-фыр' },
+  dog:    { emoji: '🐶', sound: 'гав-гав' },
+  cow:    { emoji: '🐄', sound: 'мууууууу' },
+  donkey: { emoji: '🫏', sound: 'иа-ииа' },
+};
+for (const [cmd, { emoji, sound }] of Object.entries(ANIMAL_SOUNDS)) {
+  bot.onText(new RegExp(`^\\/${cmd}`, 'i'), async (msg) => {
+    const username = await getDisplayName(msg);
+    bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+    bot.sendMessage(msg.chat.id, `${emoji} ${username}: ${sound}`, threadOpts(msg));
+  });
+}
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
 bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'текст:', msg.text));
