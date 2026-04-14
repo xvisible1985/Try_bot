@@ -349,9 +349,13 @@ bot.onText(/\/unramzan\b/, async (msg) => {
 
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
-  const rows = db.prepare('SELECT user_id, username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
-  if (!rows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
-  const lines = rows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username || r.user_id} (от ${r.added_by_name})`);
+  const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
+  const ramzanRows = db.prepare('SELECT username, added_by_name FROM ramzans ORDER BY created_at DESC').all();
+  if (!animalRows.length && !ramzanRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
+  const lines = [
+    ...animalRows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username} — ${ANIMALS[r.animal]?.sound || r.animal} (от ${r.added_by_name})`),
+    ...ramzanRows.map(r => `🗣 ${r.username} — Дон (от ${r.added_by_name})`),
+  ];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
 
