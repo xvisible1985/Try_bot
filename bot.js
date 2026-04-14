@@ -289,11 +289,15 @@ for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
     if (user.id === bot.id) return;
 
     const byName = await getDisplayName(msg);
+    const existing = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
     db.prepare(
       'INSERT OR REPLACE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(user.id, msg.chat.id, user.username, animalType, msg.from.id, byName);
 
-    bot.sendMessage(msg.chat.id, `${user.username} теперь ${emoji}`, threadOpts(msg));
+    const wasMsg = existing && existing.animal !== animalType
+      ? ` (был ${ANIMALS[existing.animal]?.emoji || existing.animal})`
+      : '';
+    bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь ${emoji}`, threadOpts(msg));
   });
 
   bot.onText(new RegExp(`^\\/un${animalType}\\b`, 'i'), async (msg) => {
@@ -305,6 +309,19 @@ for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
     bot.sendMessage(msg.chat.id, `${user.username} больше не ${emoji}`, threadOpts(msg));
   });
 }
+
+// --- Human (remove from all animal groups) ---
+bot.onText(/\/human\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  const existing = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+  db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
+
+  const wasMsg = existing ? ` (был ${ANIMALS[existing.animal]?.emoji || existing.animal})` : '';
+  bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь человек 🧑`, threadOpts(msg));
+});
 
 // --- Ramzan ---
 bot.onText(/\/ramzan\b/, async (msg) => {
