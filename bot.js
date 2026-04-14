@@ -31,6 +31,32 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS animals (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    animal TEXT NOT NULL,
+    added_by INTEGER,
+    added_by_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
+// Migrate existing pigs to animals table
+db.exec(`
+  INSERT OR IGNORE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name, created_at)
+  SELECT user_id, chat_id, username, 'pig', added_by, added_by_name, created_at FROM pigs
+`);
+
+// --- Animal definitions ---
+const ANIMALS = {
+  pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
+  cat:    { emoji: '🐱', sound: 'Мяяяяяууу' },
+  fox:    { emoji: '🦊', sound: 'Фыр-фыр-фыр' },
+  dog:    { emoji: '🐶', sound: 'Гав-гав' },
+  cow:    { emoji: '🐄', sound: 'Мууууууу' },
+  donkey: { emoji: '🫏', sound: 'Иа-ииа' },
+};
 
 // --- Profanity filter ---
 const BAD_WORDS = [
@@ -60,17 +86,17 @@ function fuzzyPattern(word) {
   }).join('[^а-яa-z0-9]*');
 }
 
-function filterProfanity(text) {
+function filterProfanity(text, replacement = 'Хрю-хрю') {
   if (!text) return text;
   let result = text;
   let replaced = false;
   // Replace words containing special chars between letters (e.g. х*й, п@зда), ignore hyphen (кое-как)
   const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
-  result = result.replace(specialInWord, () => { replaced = true; return 'Хрю-хрю'; });
+  result = result.replace(specialInWord, () => { replaced = true; return replacement; });
   for (const word of BAD_WORDS) {
     const re = new RegExp(fuzzyPattern(word), 'gi');
     if (re.test(result)) {
-      result = result.replace(re, () => { replaced = true; return 'Хрю-хрю'; });
+      result = result.replace(re, () => { replaced = true; return replacement; });
     }
   }
   return { text: result, replaced };
@@ -168,8 +194,7 @@ async function getDisplayName(msg) {
   return msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
 }
 
-async function resolveUser(msg, match) {
-  // из reply
+async function resolveUser(msg) {
   if (msg.reply_to_message) return { id: msg.reply_to_message.from.id, username: msg.reply_to_message.from.username || msg.reply_to_message.from.first_name };
   return null;
 }
@@ -206,7 +231,7 @@ bot.onText(/\/names/, async (msg) => {
 // --- Mute ---
 bot.onText(/\/mute(?:\s+(\S+))?/, async (msg, match) => {
   if (!await isAdmin(msg)) return;
-  const user = await resolveUser(msg, match);
+  const user = await resolveUser(msg);
   if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
   if (user.id === bot.id) return;
 
@@ -218,9 +243,9 @@ bot.onText(/\/mute(?:\s+(\S+))?/, async (msg, match) => {
   bot.sendMessage(msg.chat.id, `${user.username} замучен ${label}`, threadOpts(msg));
 });
 
-bot.onText(/\/unmute(?:\s+(\S+))?/, async (msg, match) => {
+bot.onText(/\/unmute(?:\s+(\S+))?/, async (msg) => {
   if (!await isAdmin(msg)) return;
-  const user = await resolveUser(msg, match);
+  const user = await resolveUser(msg);
   if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
 
   unmuteUser(user.id);
@@ -234,38 +259,41 @@ bot.onText(/\/mutes/, (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
 
-// --- Pig ---
-bot.onText(/\/pig(?:\s+(\S+))?/, async (msg, match) => {
-  if (!await isAdmin(msg)) return;
-  const user = await resolveUser(msg, match);
-  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
-  if (user.id === bot.id) return;
+// --- Animal assign/unassign (admin only, reply required) ---
+for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
+  bot.onText(new RegExp(`^\\/${animalType}\\b`, 'i'), async (msg) => {
+    if (!await isAdmin(msg)) return;
+    const user = await resolveUser(msg);
+    if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+    if (user.id === bot.id) return;
 
-  const byName = await getDisplayName(msg);
-  db.prepare(
-    'INSERT OR REPLACE INTO pigs (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
-  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+    const byName = await getDisplayName(msg);
+    db.prepare(
+      'INSERT OR REPLACE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(user.id, msg.chat.id, user.username, animalType, msg.from.id, byName);
 
-  bot.sendMessage(msg.chat.id, `${user.username} теперь 🐷`, threadOpts(msg));
-});
+    bot.sendMessage(msg.chat.id, `${user.username} теперь ${emoji}`, threadOpts(msg));
+  });
 
-bot.onText(/\/unpig(?:\s+(\S+))?/, async (msg, match) => {
-  if (!await isAdmin(msg)) return;
-  const user = await resolveUser(msg, match);
-  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  bot.onText(new RegExp(`^\\/un${animalType}\\b`, 'i'), async (msg) => {
+    if (!await isAdmin(msg)) return;
+    const user = await resolveUser(msg);
+    if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
 
-  db.prepare('DELETE FROM pigs WHERE user_id = ?').run(user.id);
-  bot.sendMessage(msg.chat.id, `${user.username} больше не 🐷`, threadOpts(msg));
-});
+    db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
+    bot.sendMessage(msg.chat.id, `${user.username} больше не ${emoji}`, threadOpts(msg));
+  });
+}
 
-bot.onText(/\/pigs/, (msg) => {
-  const rows = db.prepare('SELECT user_id, username, added_by_name FROM pigs ORDER BY created_at DESC').all();
-  if (!rows.length) return bot.sendMessage(msg.chat.id, 'Нет 🐷', threadOpts(msg));
-  const lines = rows.map(r => `${r.username || r.user_id} (от ${r.added_by_name})`);
+// --- List animals ---
+bot.onText(/\/animals/, (msg) => {
+  const rows = db.prepare('SELECT user_id, username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
+  if (!rows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
+  const lines = rows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username || r.user_id} (от ${r.added_by_name})`);
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
 
-// --- Filter muted & pig messages ---
+// --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
   if (isMuted(msg.from.id)) {
@@ -275,14 +303,14 @@ bot.on('message', async (msg) => {
     bot.sendMessage(msg.chat.id, `${msg.from.first_name}, вы замучены ${until}`, threadOpts(msg)).catch(() => {});
     return;
   }
-  // Pig filter
-  const pig = db.prepare('SELECT 1 FROM pigs WHERE user_id = ?').get(msg.from.id);
-  if (pig && msg.text) {
-    const { text, replaced } = filterProfanity(msg.text);
+  const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
+  if (animalRow && msg.text) {
+    const { emoji, sound } = ANIMALS[animalRow.animal] || ANIMALS.pig;
+    const { text, replaced } = filterProfanity(msg.text, sound);
     if (replaced) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-      bot.sendMessage(msg.chat.id, `🐷 ${nick}: ${text}`, threadOpts(msg)).catch(() => {});
+      bot.sendMessage(msg.chat.id, `${emoji} ${nick}: ${text}`, threadOpts(msg)).catch(() => {});
     }
   }
 });
@@ -318,22 +346,6 @@ bot.onText(/^\*\*(?: (.+))?/, async (msg, match) => {
   bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
   bot.sendMessage(msg.chat.id, `${username} 🟣 <b><i>${text}</i></b>`, threadOpts(msg, { parse_mode: 'HTML', ...(replyTo ? { reply_to_message_id: replyTo } : {}) }));
 });
-
-// --- Animal commands ---
-const ANIMAL_SOUNDS = {
-  cat:    { emoji: '🐱', sound: 'мяяяяяууу' },
-  fox:    { emoji: '🦊', sound: 'фыр-фыр-фыр' },
-  dog:    { emoji: '🐶', sound: 'гав-гав' },
-  cow:    { emoji: '🐄', sound: 'мууууууу' },
-  donkey: { emoji: '🫏', sound: 'иа-ииа' },
-};
-for (const [cmd, { emoji, sound }] of Object.entries(ANIMAL_SOUNDS)) {
-  bot.onText(new RegExp(`^\\/${cmd}`, 'i'), async (msg) => {
-    const username = await getDisplayName(msg);
-    bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-    bot.sendMessage(msg.chat.id, `${emoji} ${username}: ${sound}`, threadOpts(msg));
-  });
-}
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
 bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'текст:', msg.text));
