@@ -47,6 +47,16 @@ db.exec(`
   INSERT OR IGNORE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name, created_at)
   SELECT user_id, chat_id, username, 'pig', added_by, added_by_name, created_at FROM pigs
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ramzans (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    added_by INTEGER,
+    added_by_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -84,6 +94,17 @@ function fuzzyPattern(word) {
     const pattern = subs[lower] || `[${c}${c.toLowerCase()}${c.toUpperCase()}]`;
     return pattern + '+'; // allow repeated chars
   }).join('[^а-яa-z0-9]*');
+}
+
+function applyRamzan(text) {
+  const words = text.split(/\s+/);
+  const result = [];
+  for (let i = 0; i < words.length; i++) {
+    result.push(words[i]);
+    if ((i + 1) % 3 === 0) result.push('Дон');
+  }
+  if (words.length % 3 !== 0) result.push('Дон');
+  return result.join(' ');
 }
 
 function filterProfanity(text, replacement = 'Хрю-хрю') {
@@ -285,6 +306,30 @@ for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
   });
 }
 
+// --- Ramzan ---
+bot.onText(/\/ramzan\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const byName = await getDisplayName(msg);
+  db.prepare(
+    'INSERT OR REPLACE INTO ramzans (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+
+  bot.sendMessage(msg.chat.id, `${user.username} теперь Дон`, threadOpts(msg));
+});
+
+bot.onText(/\/unramzan\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  db.prepare('DELETE FROM ramzans WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} больше не Дон`, threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const rows = db.prepare('SELECT user_id, username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
@@ -304,13 +349,31 @@ bot.on('message', async (msg) => {
     return;
   }
   const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
-  if (animalRow && msg.text) {
-    const { emoji, sound } = ANIMALS[animalRow.animal] || ANIMALS.pig;
-    const { text, replaced } = filterProfanity(msg.text, sound);
-    if (replaced) {
+  const ramzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(msg.from.id);
+  if ((animalRow || ramzan) && msg.text) {
+    let text = msg.text;
+    let modified = false;
+    let prefix = '';
+
+    if (animalRow) {
+      const { emoji, sound } = ANIMALS[animalRow.animal] || ANIMALS.pig;
+      const filtered = filterProfanity(text, sound);
+      if (filtered.replaced) {
+        text = filtered.text;
+        modified = true;
+        prefix = `${emoji} `;
+      }
+    }
+
+    if (ramzan) {
+      text = applyRamzan(text);
+      modified = true;
+    }
+
+    if (modified) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-      bot.sendMessage(msg.chat.id, `${emoji} ${nick}: ${text}`, threadOpts(msg)).catch(() => {});
+      bot.sendMessage(msg.chat.id, `${prefix}${nick}: ${text}`, threadOpts(msg)).catch(() => {});
     }
   }
 });
