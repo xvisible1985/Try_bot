@@ -109,18 +109,36 @@ function applyRamzan(text) {
 
 function filterProfanity(text, replacement = 'Хрю-хрю') {
   if (!text) return text;
-  let result = text;
   let replaced = false;
-  // Replace words containing special chars between letters (e.g. х*й, п@зда), ignore hyphen (кое-как)
-  const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
-  result = result.replace(specialInWord, () => { replaced = true; return replacement; });
-  for (const word of BAD_WORDS) {
-    const re = new RegExp(fuzzyPattern(word), 'gi');
-    if (re.test(result)) {
-      result = result.replace(re, () => { replaced = true; return replacement; });
+
+  const filteredLines = text.split('\n').map(line => {
+    // Skip quoted lines (> цитата)
+    if (line.trimStart().startsWith('>')) return line;
+
+    // Protect URLs from filtering
+    const urls = [];
+    let s = line.replace(/https?:\/\/\S+|www\.\S+/gi, url => {
+      urls.push(url);
+      return `\x00U${urls.length - 1}\x00`;
+    });
+
+    // Replace words containing special chars between letters (e.g. х*й, п@зда), ignore hyphen
+    const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
+    s = s.replace(specialInWord, () => { replaced = true; return replacement; });
+
+    for (const word of BAD_WORDS) {
+      const re = new RegExp(fuzzyPattern(word), 'gi');
+      if (re.test(s)) {
+        s = s.replace(re, () => { replaced = true; return replacement; });
+      }
     }
-  }
-  return { text: result, replaced };
+
+    // Restore URLs
+    s = s.replace(/\x00U(\d+)\x00/g, (_, i) => urls[+i]);
+    return s;
+  });
+
+  return { text: filteredLines.join('\n'), replaced };
 }
 
 function isMuted(userId) {
