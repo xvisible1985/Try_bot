@@ -89,6 +89,7 @@ const BAD_WORDS = [
 // fuzzy: allow repeated chars and common substitutions (а/@, о/0, е/3, и/4, etc.)
 function fuzzyPattern(word) {
   const subs = {
+    // кириллица
     'а': '[а@4a]', 'о': '[о0o]', 'е': '[еe3ё]', 'и': '[иu4]',
     'с': '[сc]', 'р': '[рp]', 'к': '[кk]', 'х': '[хx]',
     'в': '[вb]', 'м': '[мm]', 'т': '[тt]', 'н': '[нh]',
@@ -97,6 +98,10 @@ function fuzzyPattern(word) {
     'б': '[б6]', 'ж': '[ж]', 'ф': '[ф]', 'ч': '[ч]',
     'ш': '[ш]', 'щ': '[щ]', 'ц': '[ц]', 'ъ': '[ъ]',
     'ь': '[ь]', 'ы': '[ы]', 'э': '[э]',
+    // латиница
+    'a': '[аa@4]', 'e': '[еe3]', 'i': '[иi!1]', 'o': '[оo0]',
+    'u': '[уuy]', 's': '[s$5]', 'c': '[сck]', 'g': '[g9]',
+    'b': '[b6]', 'l': '[l1]', 'z': '[z2]',
   };
   return word.split('').map(c => {
     const lower = c.toLowerCase();
@@ -137,9 +142,7 @@ function filterProfanity(text, replacement = 'Хрю-хрю') {
 
     for (const word of BAD_WORDS) {
       const re = new RegExp(fuzzyPattern(word), 'gi');
-      if (re.test(s)) {
-        s = s.replace(re, () => { replaced = true; return replacement; });
-      }
+      s = s.replace(re, () => { replaced = true; return replacement; });
     }
 
     // Restore URLs
