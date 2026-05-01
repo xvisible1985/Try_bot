@@ -228,7 +228,8 @@ async function poll() {
   }
   setTimeout(poll, 1000);
 }
-bot.deleteWebhook().then(() => skipOldUpdates()).then(() => poll());
+const deleteWebhook = (bot.deleteWebhook || bot.deleteWebHook || (() => Promise.resolve())).bind(bot);
+deleteWebhook().catch(() => {}).then(() => skipOldUpdates()).then(() => poll());
 
 // --- Helpers ---
 function threadOpts(msg, extra = {}) {
