@@ -424,14 +424,21 @@ for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
     if (user.id === bot.id) return;
 
     const byName = await getDisplayName(msg);
-    const existing = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+    const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+    const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
+    const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
+    db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
+    db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
     db.prepare(
       'INSERT OR REPLACE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(user.id, msg.chat.id, user.username, animalType, msg.from.id, byName);
 
-    const wasMsg = existing && existing.animal !== animalType
-      ? ` (был ${ANIMALS[existing.animal]?.emoji || existing.animal})`
-      : '';
+    const prevTags = [
+      existingAnimal && existingAnimal.animal !== animalType ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
+      wasEstet ? '🎨' : null,
+      wasFisher ? '🎣' : null,
+    ].filter(Boolean);
+    const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
     bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь ${emoji}`, threadOpts(msg));
   });
 
@@ -478,12 +485,21 @@ bot.onText(/\/fisher\b/, async (msg) => {
   if (user.id === bot.id) return;
 
   const byName = await getDisplayName(msg);
+  const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+  const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
+  db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
   const expiresAt = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
   db.prepare(
     'INSERT OR REPLACE INTO fishers (user_id, chat_id, username, added_by, added_by_name, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(user.id, msg.chat.id, user.username, msg.from.id, byName, expiresAt);
 
-  bot.sendMessage(msg.chat.id, `${user.username} теперь 🎣 на 5 минут`, threadOpts(msg));
+  const prevTags = [
+    existingAnimal ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
+    wasEstet ? '🎨' : null,
+  ].filter(Boolean);
+  const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
+  bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь 🎣 на 5 минут`, threadOpts(msg));
 });
 
 bot.onText(/\/unfisher\b/, async (msg) => {
@@ -527,11 +543,20 @@ bot.onText(/\/estet\b/, async (msg) => {
   if (user.id === bot.id) return;
 
   const byName = await getDisplayName(msg);
+  const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+  const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
+  db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
   db.prepare(
     'INSERT OR REPLACE INTO estets (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
   ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
 
-  bot.sendMessage(msg.chat.id, `${user.username} теперь 🎨 эстет`, threadOpts(msg));
+  const prevTags = [
+    existingAnimal ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
+    wasFisher ? '🎣' : null,
+  ].filter(Boolean);
+  const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
+  bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь 🎨 эстет`, threadOpts(msg));
 });
 
 bot.onText(/\/unestet\b/, async (msg) => {
