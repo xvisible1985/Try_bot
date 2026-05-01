@@ -71,6 +71,17 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS estets (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    added_by INTEGER,
+    added_by_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
@@ -80,6 +91,81 @@ const ANIMALS = {
   cow:    { emoji: '🐄', sound: 'Мууууууу' },
   donkey: { emoji: '🫏', sound: 'Иа-ииа' },
 };
+
+// --- Compliments for /estet ---
+const COMPLIMENTS = [
+  'ты просто прелесть', 'у тебя прекрасная улыбка', 'ты удивительный человек',
+  'ты очень умный', 'ты вдохновляешь меня', 'у тебя отличное чувство юмора',
+  'ты настоящий профессионал', 'с тобой так приятно общаться', 'ты очень надёжный',
+  'у тебя прекрасная душа', 'ты делаешь мир лучше', 'ты невероятно талантлив',
+  'твоя доброта восхищает', 'ты самый обаятельный', 'у тебя золотые руки',
+  'ты молодец, серьёзно', 'с тобой всегда весело', 'ты очень проницательный',
+  'у тебя великолепный вкус', 'ты просто находка', 'ты очень чуткий человек',
+  'твоя улыбка освещает комнату', 'ты источник позитива', 'ты восхитителен',
+  'у тебя прекрасные манеры', 'ты настоящий друг', 'ты очень интересный собеседник',
+  'ты умеешь поднять настроение', 'с тобой хочется дружить', 'ты просто супер',
+];
+
+// Dahlʼs dictionary meanings for common swear roots
+const DAHL = {
+  'хуй':   'ударение (устар., Даль)',
+  'пизд':  'путь далёкий (устар., Даль)',
+  'еб':    'стремление духа (устар., Даль)',
+  'ёб':    'стремление духа (устар., Даль)',
+  'блядь': 'скиталица, блуждающая (Даль)',
+  'бля':   'блуждание (устар., Даль)',
+  'сука':  'самка пса (Даль)',
+  'мудак': 'мудрый муж (устар., Даль)',
+  'хер':   'буква старослав. азбуки (Даль)',
+  'говн':  'природное удобрение (Даль)',
+  'жоп':   'округлость форм (устар., Даль)',
+  'дерьм': 'органическое вещество (Даль)',
+  'залуп': 'завёрнутое (устар., Даль)',
+  'шлюх':  'неряха (устар., Даль)',
+  'пидор': 'пешеход (устар., Даль)',
+  'мудил': 'мудрый (устар., Даль)',
+  'долбо': 'долбящий усердно (Даль)',
+  'fuck':  'to strike (Old English)',
+  'shit':  'intestinal secretion (Old English)',
+  'bitch': 'female canine (Old English)',
+};
+
+function dahlReplacement(matchedWord) {
+  const lower = matchedWord.toLowerCase();
+  for (const [root, meaning] of Object.entries(DAHL)) {
+    if (lower.includes(root)) return meaning;
+  }
+  return 'слово высокого стиля (Даль)';
+}
+
+function randomCompliment() {
+  return COMPLIMENTS[Math.floor(Math.random() * COMPLIMENTS.length)];
+}
+
+function filterProfanityEstet(text) {
+  if (!text) return { text, replaced: false };
+  let replaced = false;
+  const isInsult = /\bты\b|\bвас\b|\bтебя\b|\bтебе\b/i.test(text);
+
+  const filteredLines = text.split('\n').map(line => {
+    if (line.trimStart().startsWith('>')) return line;
+    const urls = [];
+    let s = line.replace(/https?:\/\/\S+|www\.\S+/gi, url => { urls.push(url); return `\x00U${urls.length - 1}\x00`; });
+
+    const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
+    s = s.replace(specialInWord, () => { replaced = true; return isInsult ? randomCompliment() : 'слово высокого стиля (Даль)'; });
+
+    for (const word of BAD_WORDS) {
+      const re = new RegExp(fuzzyPattern(word), 'gi');
+      s = s.replace(re, (match) => { replaced = true; return isInsult ? randomCompliment() : dahlReplacement(match); });
+    }
+
+    s = s.replace(/\x00U(\d+)\x00/g, (_, i) => urls[+i]);
+    return s;
+  });
+
+  return { text: filteredLines.join('\n'), replaced };
+}
 
 // --- Profanity filter ---
 const BAD_WORDS = [
@@ -368,14 +454,17 @@ bot.onText(/\/human\b/, async (msg) => {
   const existing = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
   const wasRamzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(user.id);
   const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
+  const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
   db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM ramzans WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
 
   const tags = [
     existing ? (ANIMALS[existing.animal]?.emoji || existing.animal) : null,
     wasRamzan ? 'Дон' : null,
     wasFisher ? '🎣' : null,
+    wasEstet ? '🎨' : null,
   ].filter(Boolean);
   const wasMsg = tags.length ? ` (был ${tags.join(', ')})` : '';
   bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь человек 🧑`, threadOpts(msg));
@@ -430,17 +519,43 @@ bot.onText(/\/unramzan\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `${user.username} больше не Дон`, threadOpts(msg));
 });
 
+// --- Estet ---
+bot.onText(/\/estet\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const byName = await getDisplayName(msg);
+  db.prepare(
+    'INSERT OR REPLACE INTO estets (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+
+  bot.sendMessage(msg.chat.id, `${user.username} теперь 🎨 эстет`, threadOpts(msg));
+});
+
+bot.onText(/\/unestet\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} больше не 🎨 эстет`, threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
   const ramzanRows = db.prepare('SELECT username, added_by_name FROM ramzans ORDER BY created_at DESC').all();
-  if (!animalRows.length && !ramzanRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
+  const estetRows = db.prepare('SELECT username, added_by_name FROM estets ORDER BY created_at DESC').all();
   const now = Math.floor(Date.now() / 1000);
   const fisherRows = db.prepare('SELECT username, added_by_name, expires_at FROM fishers WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC').all(now);
+  if (!animalRows.length && !ramzanRows.length && !fisherRows.length && !estetRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
   const lines = [
     ...animalRows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username} — ${ANIMALS[r.animal]?.sound || r.animal} (от ${r.added_by_name})`),
     ...ramzanRows.map(r => `🗣 ${r.username} — Дон (от ${r.added_by_name})`),
     ...fisherRows.map(r => `🎣 ${r.username} — ${formatExpire(r.expires_at)} (от ${r.added_by_name})`),
+    ...estetRows.map(r => `🎨 ${r.username} — эстет (от ${r.added_by_name})`),
   ];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
@@ -494,6 +609,17 @@ bot.on('message', async (msg) => {
       return;
     }
   }
+  const estetRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
+  if (estetRow && msg.text) {
+    const { text: filtered, replaced } = filterProfanityEstet(msg.text);
+    if (replaced) {
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+      const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      bot.sendMessage(msg.chat.id, `🎨 ${nick}: ${filtered}`, threadOpts(msg)).catch(() => {});
+      return;
+    }
+  }
+
   const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
   const ramzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(msg.from.id);
   if ((animalRow || ramzan) && msg.text) {
