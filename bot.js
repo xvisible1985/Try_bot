@@ -55,9 +55,11 @@ db.exec(`
     username TEXT,
     added_by INTEGER,
     added_by_name TEXT,
+    expires_at INTEGER,
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
+try { db.exec('ALTER TABLE fishers ADD COLUMN expires_at INTEGER'); } catch {};
 db.exec(`
   CREATE TABLE IF NOT EXISTS ramzans (
     user_id INTEGER PRIMARY KEY,
@@ -387,11 +389,12 @@ bot.onText(/\/fisher\b/, async (msg) => {
   if (user.id === bot.id) return;
 
   const byName = await getDisplayName(msg);
+  const expiresAt = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
   db.prepare(
-    'INSERT OR REPLACE INTO fishers (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
-  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+    'INSERT OR REPLACE INTO fishers (user_id, chat_id, username, added_by, added_by_name, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName, expiresAt);
 
-  bot.sendMessage(msg.chat.id, `${user.username} теперь 🎣`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `${user.username} теперь 🎣 на 5 минут`, threadOpts(msg));
 });
 
 bot.onText(/\/unfisher\b/, async (msg) => {
@@ -432,11 +435,12 @@ bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
   const ramzanRows = db.prepare('SELECT username, added_by_name FROM ramzans ORDER BY created_at DESC').all();
   if (!animalRows.length && !ramzanRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
-  const fisherRows = db.prepare('SELECT username, added_by_name FROM fishers ORDER BY created_at DESC').all();
+  const now = Math.floor(Date.now() / 1000);
+  const fisherRows = db.prepare('SELECT username, added_by_name, expires_at FROM fishers WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC').all(now);
   const lines = [
     ...animalRows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username} — ${ANIMALS[r.animal]?.sound || r.animal} (от ${r.added_by_name})`),
     ...ramzanRows.map(r => `🗣 ${r.username} — Дон (от ${r.added_by_name})`),
-    ...fisherRows.map(r => `🎣 ${r.username} — 🐟×10 (от ${r.added_by_name})`),
+    ...fisherRows.map(r => `🎣 ${r.username} — ${formatExpire(r.expires_at)} (от ${r.added_by_name})`),
   ];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
@@ -451,12 +455,16 @@ bot.on('message', async (msg) => {
     bot.sendMessage(msg.chat.id, `${msg.from.first_name}, вы замучены ${until}`, threadOpts(msg)).catch(() => {});
     return;
   }
-  const fisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(msg.from.id);
-  if (fisher && msg.text) {
-    bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-    const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-    bot.sendMessage(msg.chat.id, `🎣 ${nick}: 🐟🐟🐟🐟🐟🐟🐟🐟🐟🐟`, threadOpts(msg)).catch(() => {});
-    return;
+  const fisherRow = db.prepare('SELECT expires_at FROM fishers WHERE user_id = ?').get(msg.from.id);
+  if (fisherRow) {
+    if (fisherRow.expires_at && fisherRow.expires_at * 1000 < Date.now()) {
+      db.prepare('DELETE FROM fishers WHERE user_id = ?').run(msg.from.id);
+    } else if (msg.text) {
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+      const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      bot.sendMessage(msg.chat.id, `🎣 ${nick}: 🐟🐟🐟🐟🐟🐟🐟🐟🐟🐟`, threadOpts(msg)).catch(() => {});
+      return;
+    }
   }
   const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
   const ramzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(msg.from.id);
