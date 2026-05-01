@@ -462,7 +462,9 @@ bot.on('message', async (msg) => {
     } else if (msg.text) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-      bot.sendMessage(msg.chat.id, `🎣 ${nick}: 🐟🐟🐟🐟🐟🐟🐟🐟🐟🐟`, threadOpts(msg)).catch(() => {});
+      bot.sendMessage(msg.chat.id, `🎣 ${nick}: 🐟🐟🐟🐟🐟🐟🐟🐟🐟🐟`, threadOpts(msg))
+        .then(sent => setTimeout(() => bot.deleteMessage(msg.chat.id, sent.message_id).catch(() => {}), 3000))
+        .catch(() => {});
       return;
     }
   }
