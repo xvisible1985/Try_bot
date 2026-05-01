@@ -108,26 +108,26 @@ const COMPLIMENTS = [
 
 // Dahlʼs dictionary meanings for common swear roots
 const DAHL = {
-  'хуй':   'ударение (устар., Даль)',
-  'пизд':  'путь далёкий (устар., Даль)',
-  'еб':    'стремление духа (устар., Даль)',
-  'ёб':    'стремление духа (устар., Даль)',
-  'блядь': 'скиталица, блуждающая (Даль)',
-  'бля':   'блуждание (устар., Даль)',
-  'сука':  'самка пса (Даль)',
-  'мудак': 'мудрый муж (устар., Даль)',
-  'хер':   'буква старослав. азбуки (Даль)',
-  'говн':  'природное удобрение (Даль)',
-  'жоп':   'округлость форм (устар., Даль)',
-  'дерьм': 'органическое вещество (Даль)',
-  'залуп': 'завёрнутое (устар., Даль)',
-  'шлюх':  'неряха (устар., Даль)',
-  'пидор': 'пешеход (устар., Даль)',
-  'мудил': 'мудрый (устар., Даль)',
-  'долбо': 'долбящий усердно (Даль)',
-  'fuck':  'to strike (Old English)',
-  'shit':  'intestinal secretion (Old English)',
-  'bitch': 'female canine (Old English)',
+  'хуй':   'ударение',
+  'пизд':  'путь далёкий',
+  'еб':    'стремление духа',
+  'ёб':    'стремление духа',
+  'блядь': 'скиталица, блуждающая',
+  'бля':   'блуждание',
+  'сука':  'самка пса',
+  'мудак': 'мудрый муж',
+  'хер':   'буква старославянской азбуки',
+  'говн':  'природное удобрение',
+  'жоп':   'округлость форм',
+  'дерьм': 'органическое вещество',
+  'залуп': 'завёрнутое',
+  'шлюх':  'неряха',
+  'пидор': 'пешеход',
+  'мудил': 'мудрый',
+  'долбо': 'долбящий усердно',
+  'fuck':  'to strike',
+  'shit':  'intestinal secretion',
+  'bitch': 'female canine',
 };
 
 function dahlReplacement(matchedWord) {
@@ -135,7 +135,7 @@ function dahlReplacement(matchedWord) {
   for (const [root, meaning] of Object.entries(DAHL)) {
     if (lower.includes(root)) return meaning;
   }
-  return 'слово высокого стиля (Даль)';
+  return 'слово высокого стиля';
 }
 
 function randomCompliment() {
@@ -153,7 +153,7 @@ function filterProfanityEstet(text) {
     let s = line.replace(/https?:\/\/\S+|www\.\S+/gi, url => { urls.push(url); return `\x00U${urls.length - 1}\x00`; });
 
     const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
-    s = s.replace(specialInWord, () => { replaced = true; return isInsult ? randomCompliment() : 'слово высокого стиля (Даль)'; });
+    s = s.replace(specialInWord, () => { replaced = true; return isInsult ? randomCompliment() : 'слово высокого стиля'; });
 
     for (const word of BAD_WORDS) {
       const re = new RegExp(fuzzyPattern(word), 'gi');
