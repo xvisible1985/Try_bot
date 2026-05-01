@@ -81,6 +81,27 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS podhalims (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    added_by INTEGER,
+    added_by_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS molchuns (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    added_by INTEGER,
+    added_by_name TEXT,
+    expires_at INTEGER,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -158,6 +179,30 @@ function filterProfanityEstet(text) {
     for (const word of BAD_WORDS) {
       const re = new RegExp(fuzzyPattern(word), 'gi');
       s = s.replace(re, (match) => { replaced = true; return isInsult ? randomCompliment() : dahlReplacement(match); });
+    }
+
+    s = s.replace(/\x00U(\d+)\x00/g, (_, i) => urls[+i]);
+    return s;
+  });
+
+  return { text: filteredLines.join('\n'), replaced };
+}
+
+function filterProfanityPodhalim(text) {
+  if (!text) return { text, replaced: false };
+  let replaced = false;
+
+  const filteredLines = text.split('\n').map(line => {
+    if (line.trimStart().startsWith('>')) return line;
+    const urls = [];
+    let s = line.replace(/https?:\/\/\S+|www\.\S+/gi, url => { urls.push(url); return `\x00U${urls.length - 1}\x00`; });
+
+    const specialInWord = /\S*[а-яёА-ЯЁa-zA-Z][^а-яёА-ЯЁa-zA-Z0-9\s\-][а-яёА-ЯЁa-zA-Z]\S*/g;
+    s = s.replace(specialInWord, () => { replaced = true; return randomCompliment(); });
+
+    for (const word of BAD_WORDS) {
+      const re = new RegExp(fuzzyPattern(word), 'gi');
+      s = s.replace(re, () => { replaced = true; return randomCompliment(); });
     }
 
     s = s.replace(/\x00U(\d+)\x00/g, (_, i) => urls[+i]);
@@ -427,8 +472,10 @@ for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
     const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
     const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
     const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
+    const wasPodhalim = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(user.id);
     db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
     db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
+    db.prepare('DELETE FROM podhalims WHERE user_id = ?').run(user.id);
     db.prepare(
       'INSERT OR REPLACE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(user.id, msg.chat.id, user.username, animalType, msg.from.id, byName);
@@ -437,6 +484,7 @@ for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
       existingAnimal && existingAnimal.animal !== animalType ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
       wasEstet ? '🎨' : null,
       wasFisher ? '🎣' : null,
+      wasPodhalim ? '🫦' : null,
     ].filter(Boolean);
     const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
     bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь ${emoji}`, threadOpts(msg));
@@ -462,16 +510,22 @@ bot.onText(/\/human\b/, async (msg) => {
   const wasRamzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(user.id);
   const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
   const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
+  const wasPodhalim = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(user.id);
+  const wasMolchun = db.prepare('SELECT 1 FROM molchuns WHERE user_id = ?').get(user.id);
   db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM ramzans WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM podhalims WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM molchuns WHERE user_id = ?').run(user.id);
 
   const tags = [
     existing ? (ANIMALS[existing.animal]?.emoji || existing.animal) : null,
     wasRamzan ? 'Дон' : null,
     wasFisher ? '🎣' : null,
     wasEstet ? '🎨' : null,
+    wasPodhalim ? '🫦' : null,
+    wasMolchun ? '🤐' : null,
   ].filter(Boolean);
   const wasMsg = tags.length ? ` (был ${tags.join(', ')})` : '';
   bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь человек 🧑`, threadOpts(msg));
@@ -487,8 +541,10 @@ bot.onText(/\/fisher\b/, async (msg) => {
   const byName = await getDisplayName(msg);
   const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
   const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
+  const wasPodhalim = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(user.id);
   db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM podhalims WHERE user_id = ?').run(user.id);
   const expiresAt = Math.floor((Date.now() + 5 * 60 * 1000) / 1000);
   db.prepare(
     'INSERT OR REPLACE INTO fishers (user_id, chat_id, username, added_by, added_by_name, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -497,6 +553,7 @@ bot.onText(/\/fisher\b/, async (msg) => {
   const prevTags = [
     existingAnimal ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
     wasEstet ? '🎨' : null,
+    wasPodhalim ? '🫦' : null,
   ].filter(Boolean);
   const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
   bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь 🎣 на 5 минут`, threadOpts(msg));
@@ -545,8 +602,10 @@ bot.onText(/\/estet\b/, async (msg) => {
   const byName = await getDisplayName(msg);
   const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
   const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
+  const wasPodhalim = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(user.id);
   db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM podhalims WHERE user_id = ?').run(user.id);
   db.prepare(
     'INSERT OR REPLACE INTO estets (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
   ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
@@ -554,6 +613,7 @@ bot.onText(/\/estet\b/, async (msg) => {
   const prevTags = [
     existingAnimal ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
     wasFisher ? '🎣' : null,
+    wasPodhalim ? '🫦' : null,
   ].filter(Boolean);
   const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
   bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь 🎨 эстет`, threadOpts(msg));
@@ -568,19 +628,85 @@ bot.onText(/\/unestet\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `${user.username} больше не 🎨 эстет`, threadOpts(msg));
 });
 
+// --- Podhalim ---
+bot.onText(/\/podhalim\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const byName = await getDisplayName(msg);
+  const existingAnimal = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
+  const wasEstet = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(user.id);
+  const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
+  db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
+  db.prepare(
+    'INSERT OR REPLACE INTO podhalims (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+
+  const prevTags = [
+    existingAnimal ? (ANIMALS[existingAnimal.animal]?.emoji || existingAnimal.animal) : null,
+    wasEstet ? '🎨' : null,
+    wasFisher ? '🎣' : null,
+  ].filter(Boolean);
+  const wasMsg = prevTags.length ? ` (был ${prevTags.join(', ')})` : '';
+  bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь 🫦 подхалим`, threadOpts(msg));
+});
+
+bot.onText(/\/unpodhalim\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  db.prepare('DELETE FROM podhalims WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} больше не 🫦 подхалим`, threadOpts(msg));
+});
+
+// --- Molchun ---
+bot.onText(/\/molchun(?:\s+(\d+))?/, async (msg, match) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const minutes = parseInt(match[1] || '5');
+  const byName = await getDisplayName(msg);
+  const expiresAt = Math.floor((Date.now() + minutes * 60 * 1000) / 1000);
+  db.prepare(
+    'INSERT OR REPLACE INTO molchuns (user_id, chat_id, username, added_by, added_by_name, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName, expiresAt);
+
+  bot.sendMessage(msg.chat.id, `${user.username} теперь 🤐 на ${minutes} мин`, threadOpts(msg));
+});
+
+bot.onText(/\/unmolchun\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  db.prepare('DELETE FROM molchuns WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} больше не 🤐`, threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
   const ramzanRows = db.prepare('SELECT username, added_by_name FROM ramzans ORDER BY created_at DESC').all();
   const estetRows = db.prepare('SELECT username, added_by_name FROM estets ORDER BY created_at DESC').all();
+  const podhalimRows = db.prepare('SELECT username, added_by_name FROM podhalims ORDER BY created_at DESC').all();
   const now = Math.floor(Date.now() / 1000);
   const fisherRows = db.prepare('SELECT username, added_by_name, expires_at FROM fishers WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC').all(now);
-  if (!animalRows.length && !ramzanRows.length && !fisherRows.length && !estetRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
+  const molchunRows = db.prepare('SELECT username, added_by_name, expires_at FROM molchuns WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC').all(now);
+  if (!animalRows.length && !ramzanRows.length && !fisherRows.length && !estetRows.length && !podhalimRows.length && !molchunRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
   const lines = [
     ...animalRows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username} — ${ANIMALS[r.animal]?.sound || r.animal} (от ${r.added_by_name})`),
     ...ramzanRows.map(r => `🗣 ${r.username} — Дон (от ${r.added_by_name})`),
     ...fisherRows.map(r => `🎣 ${r.username} — ${formatExpire(r.expires_at)} (от ${r.added_by_name})`),
     ...estetRows.map(r => `🎨 ${r.username} — эстет (от ${r.added_by_name})`),
+    ...podhalimRows.map(r => `🫦 ${r.username} — подхалим (от ${r.added_by_name})`),
+    ...molchunRows.map(r => `🤐 ${r.username} — молчун ${formatExpire(r.expires_at)} (от ${r.added_by_name})`),
   ];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
@@ -634,11 +760,26 @@ bot.on('message', async (msg) => {
       return;
     }
   }
+  const molchunRow = db.prepare('SELECT expires_at FROM molchuns WHERE user_id = ?').get(msg.from.id);
+  if (molchunRow) {
+    if (molchunRow.expires_at && molchunRow.expires_at * 1000 < Date.now()) {
+      db.prepare('DELETE FROM molchuns WHERE user_id = ?').run(msg.from.id);
+    } else if (msg.text) {
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+      const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      bot.sendMessage(msg.chat.id, `🤐 ${nick}: 🤐`, threadOpts(msg))
+        .then(sent => setTimeout(() => bot.deleteMessage(msg.chat.id, sent.message_id).catch(() => {}), 3000))
+        .catch(() => {});
+      return;
+    }
+  }
+
   const estetRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
+  const podhalimRow = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(msg.from.id);
   const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
   const ramzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(msg.from.id);
 
-  if ((estetRow || animalRow || ramzan) && msg.text) {
+  if ((estetRow || podhalimRow || animalRow || ramzan) && msg.text) {
     let text = msg.text;
     let modified = false;
     const prefixParts = [];
@@ -646,6 +787,11 @@ bot.on('message', async (msg) => {
     if (estetRow) {
       const { text: filtered, replaced } = filterProfanityEstet(text);
       if (replaced) { text = filtered; modified = true; prefixParts.push('🎨'); }
+    }
+
+    if (podhalimRow) {
+      const { text: filtered, replaced } = filterProfanityPodhalim(text);
+      if (replaced) { text = filtered; modified = true; prefixParts.push('🫦'); }
     }
 
     if (animalRow) {
@@ -666,6 +812,40 @@ bot.on('message', async (msg) => {
       bot.sendMessage(msg.chat.id, `${prefix}${nick}: ${text}`, threadOpts(msg)).catch(() => {});
     }
   }
+});
+
+// --- Help ---
+bot.onText(/\/help/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const text = [
+    '<b>Команды бота (только для админов)</b>',
+    '',
+    '<b>Статусы (ответ на сообщение):</b>',
+    '/pig /cat /fox /dog /cow /donkey — присвоить статус животного (мат заменяется звуком)',
+    '/ramzan — после каждого 3-го слова добавляет "Дон" (стакуется с другими)',
+    '/fisher — рыбак: все сообщения = 🐟×10, удаляются через 3с (5 мин)',
+    '/estet — эстет: оскорбления → комплименты, мат → значения из Даля',
+    '/podhalim — подхалим: весь мат заменяется комплиментами',
+    '/molchun [минуты] — молчун: сообщения заменяются на 🤐 (по умолчанию 5 мин)',
+    '/human — снять все статусы',
+    '',
+    '<b>Отмена статусов:</b>',
+    '/unpig /uncat /unfox /undog /uncow /undonkey',
+    '/unramzan /unfisher /unestet /unpodhalim /unmolchun',
+    '',
+    '<b>Мут:</b>',
+    '/mute [10m|2h|1d] — замутить пользователя',
+    '/unmute — размутить',
+    '/mutes — список замутов',
+    '',
+    '<b>Прочее:</b>',
+    '/animals — список всех активных статусов',
+    '/names — список администраторов',
+    '/try [текст] — попытка (0–100)',
+    '/dice [максимум] — кубик',
+    '** [текст] — действие от третьего лица',
+  ].join('\n');
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg, { parse_mode: 'HTML' }));
 });
 
 // --- Game commands ---
