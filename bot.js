@@ -1,4 +1,5 @@
 require('dotenv').config();
+const https = require('https');
 const TelegramBot = require('node-telegram-bot-api');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const Database = require('better-sqlite3');
@@ -229,8 +230,12 @@ async function poll() {
   }
   setTimeout(poll, 1000);
 }
-const deleteWebhook = (bot.deleteWebhook || bot.deleteWebHook || (() => Promise.resolve())).bind(bot);
-deleteWebhook().catch(() => {}).then(() => skipOldUpdates()).then(() => poll());
+function deleteWebhookDirect() {
+  return new Promise((resolve) => {
+    https.get(`https://api.telegram.org/bot${token}/deleteWebhook`, res => { res.resume(); resolve(); }).on('error', resolve);
+  });
+}
+deleteWebhookDirect().then(() => skipOldUpdates()).then(() => poll());
 
 // --- Helpers ---
 function threadOpts(msg, extra = {}) {
