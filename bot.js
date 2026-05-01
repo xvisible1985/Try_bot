@@ -1,13 +1,39 @@
 require('dotenv').config();
 const https = require('https');
+const os = require('os');
+const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const Database = require('better-sqlite3');
+const { createWorker } = require('tesseract.js');
 
 const token = process.env.BOT_TOKEN;
 const proxy = process.env.PROXY_URL;
 const agent = proxy ? new HttpsProxyAgent(proxy) : undefined;
 const bot = new TelegramBot(token, { request: { agent } });
+
+// --- OCR ---
+let ocrWorker = null;
+(async () => {
+  try {
+    ocrWorker = await createWorker('rus+eng');
+    console.log('OCR воркер готов');
+  } catch (e) {
+    console.error('OCR воркер ошибка:', e.message);
+  }
+})();
+
+async function recognizeSticker(fileId) {
+  if (!ocrWorker) return '';
+  try {
+    const tmpPath = await bot.downloadFile(fileId, os.tmpdir());
+    const { data: { text } } = await ocrWorker.recognize(tmpPath);
+    fs.unlink(tmpPath, () => {});
+    return text.trim();
+  } catch {
+    return '';
+  }
+}
 
 // --- SQLite ---
 const db = new Database('mutes.db');
@@ -751,7 +777,7 @@ bot.on('message', async (msg) => {
   if (fisherRow) {
     if (fisherRow.expires_at && fisherRow.expires_at * 1000 < Date.now()) {
       db.prepare('DELETE FROM fishers WHERE user_id = ?').run(msg.from.id);
-    } else if (msg.text) {
+    } else if (msg.text || msg.sticker) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
       bot.sendMessage(msg.chat.id, `🎣 ${nick}: 🐟🐟🐟🐟🐟🐟🐟🐟🐟🐟`, threadOpts(msg))
@@ -764,7 +790,7 @@ bot.on('message', async (msg) => {
   if (molchunRow) {
     if (molchunRow.expires_at && molchunRow.expires_at * 1000 < Date.now()) {
       db.prepare('DELETE FROM molchuns WHERE user_id = ?').run(msg.from.id);
-    } else if (msg.text) {
+    } else if (msg.text || msg.sticker) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
       bot.sendMessage(msg.chat.id, `🤐 ${nick}: 🤐`, threadOpts(msg))
@@ -772,6 +798,35 @@ bot.on('message', async (msg) => {
         .catch(() => {});
       return;
     }
+  }
+
+  // Sticker OCR — only static stickers (.webp), skip animated/video
+  if (msg.sticker && !msg.sticker.is_animated && !msg.sticker.is_video) {
+    const stickerText = await recognizeSticker(msg.sticker.file_id);
+    if (stickerText) {
+      const { replaced } = filterProfanity(stickerText, '');
+      if (replaced) {
+        const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+        const aRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
+        const eRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
+        const pRow = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(msg.from.id);
+        bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+        let reply;
+        if (aRow) {
+          const { emoji, sound } = ANIMALS[aRow.animal] || ANIMALS.pig;
+          reply = `${emoji} ${nick}: ${sound}`;
+        } else if (pRow) {
+          reply = `🫦 ${nick}: ${randomCompliment()}`;
+        } else if (eRow) {
+          reply = `🎨 ${nick}: ${randomCompliment()}`;
+        } else {
+          reply = `${nick}, стикер с матом удалён 🤬`;
+        }
+        bot.sendMessage(msg.chat.id, reply, threadOpts(msg)).catch(() => {});
+        return;
+      }
+    }
+    return;
   }
 
   const estetRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
