@@ -221,6 +221,7 @@ async function poll() {
     ]);
     for (const update of updates) {
       offset = update.update_id + 1;
+      console.log('UPDATE', update.update_id, Object.keys(update).filter(k => k !== 'update_id'), update.message?.from?.username, update.message?.text?.slice(0, 30));
       bot.processUpdate(update);
     }
   } catch (err) {
