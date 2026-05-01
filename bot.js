@@ -445,6 +445,9 @@ bot.onText(/\/animals/, (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
 
+// --- Auto-fisher: 2+ "рыбалка" within 15s ---
+const fishingTracker = new Map();
+
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
@@ -455,6 +458,29 @@ bot.on('message', async (msg) => {
     bot.sendMessage(msg.chat.id, `${msg.from.first_name}, вы замучены ${until}`, threadOpts(msg)).catch(() => {});
     return;
   }
+  // Auto-fisher trigger
+  if (msg.text && /рыбалк/i.test(msg.text)) {
+    const now = Date.now();
+    const times = (fishingTracker.get(msg.from.id) || []).filter(t => now - t < 15000);
+    times.push(now);
+    fishingTracker.set(msg.from.id, times);
+    if (times.length >= 2) {
+      fishingTracker.delete(msg.from.id);
+      const alreadyFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(msg.from.id);
+      if (!alreadyFisher) {
+        const expiresAt = Math.floor((now + 5 * 60 * 1000) / 1000);
+        const username = msg.from.username || msg.from.first_name;
+        db.prepare(
+          'INSERT OR REPLACE INTO fishers (user_id, chat_id, username, added_by, added_by_name, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(msg.from.id, msg.chat.id, username, 0, 'автоматически', expiresAt);
+        const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+        bot.sendMessage(msg.chat.id, `🎣 ${nick} говорит о рыбалке слишком часто — статус рыбака на 5 минут!`, threadOpts(msg))
+          .then(sent => setTimeout(() => bot.deleteMessage(msg.chat.id, sent.message_id).catch(() => {}), 3000))
+          .catch(() => {});
+      }
+    }
+  }
+
   const fisherRow = db.prepare('SELECT expires_at FROM fishers WHERE user_id = ?').get(msg.from.id);
   if (fisherRow) {
     if (fisherRow.expires_at && fisherRow.expires_at * 1000 < Date.now()) {
