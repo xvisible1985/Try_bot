@@ -49,6 +49,16 @@ db.exec(`
   SELECT user_id, chat_id, username, 'pig', added_by, added_by_name, created_at FROM pigs
 `);
 db.exec(`
+  CREATE TABLE IF NOT EXISTS fishers (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    added_by INTEGER,
+    added_by_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
+db.exec(`
   CREATE TABLE IF NOT EXISTS ramzans (
     user_id INTEGER PRIMARY KEY,
     chat_id INTEGER NOT NULL,
@@ -355,15 +365,42 @@ bot.onText(/\/human\b/, async (msg) => {
 
   const existing = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(user.id);
   const wasRamzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(user.id);
+  const wasFisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(user.id);
   db.prepare('DELETE FROM animals WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM ramzans WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
 
   const tags = [
     existing ? (ANIMALS[existing.animal]?.emoji || existing.animal) : null,
     wasRamzan ? 'Дон' : null,
+    wasFisher ? '🎣' : null,
   ].filter(Boolean);
   const wasMsg = tags.length ? ` (был ${tags.join(', ')})` : '';
   bot.sendMessage(msg.chat.id, `${user.username}${wasMsg} теперь человек 🧑`, threadOpts(msg));
+});
+
+// --- Fisher ---
+bot.onText(/\/fisher\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const byName = await getDisplayName(msg);
+  db.prepare(
+    'INSERT OR REPLACE INTO fishers (user_id, chat_id, username, added_by, added_by_name) VALUES (?, ?, ?, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+
+  bot.sendMessage(msg.chat.id, `${user.username} теперь 🎣`, threadOpts(msg));
+});
+
+bot.onText(/\/unfisher\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  db.prepare('DELETE FROM fishers WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} больше не 🎣`, threadOpts(msg));
 });
 
 // --- Ramzan ---
@@ -395,9 +432,11 @@ bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
   const ramzanRows = db.prepare('SELECT username, added_by_name FROM ramzans ORDER BY created_at DESC').all();
   if (!animalRows.length && !ramzanRows.length) return bot.sendMessage(msg.chat.id, 'Список пуст', threadOpts(msg));
+  const fisherRows = db.prepare('SELECT username, added_by_name FROM fishers ORDER BY created_at DESC').all();
   const lines = [
     ...animalRows.map(r => `${ANIMALS[r.animal]?.emoji || '?'} ${r.username} — ${ANIMALS[r.animal]?.sound || r.animal} (от ${r.added_by_name})`),
     ...ramzanRows.map(r => `🗣 ${r.username} — Дон (от ${r.added_by_name})`),
+    ...fisherRows.map(r => `🎣 ${r.username} — 🐟×10 (от ${r.added_by_name})`),
   ];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
@@ -410,6 +449,13 @@ bot.on('message', async (msg) => {
     const row = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(msg.from.id);
     const until = row ? formatExpire(row.expires_at) : '';
     bot.sendMessage(msg.chat.id, `${msg.from.first_name}, вы замучены ${until}`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const fisher = db.prepare('SELECT 1 FROM fishers WHERE user_id = ?').get(msg.from.id);
+  if (fisher && msg.text) {
+    bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+    const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+    bot.sendMessage(msg.chat.id, `🎣 ${nick}: 🐟🐟🐟🐟🐟🐟🐟🐟🐟🐟`, threadOpts(msg)).catch(() => {});
     return;
   }
   const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
