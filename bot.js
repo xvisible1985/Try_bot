@@ -610,31 +610,23 @@ bot.on('message', async (msg) => {
     }
   }
   const estetRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
-  if (estetRow && msg.text) {
-    const { text: filtered, replaced } = filterProfanityEstet(msg.text);
-    if (replaced) {
-      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-      const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-      bot.sendMessage(msg.chat.id, `🎨 ${nick}: ${filtered}`, threadOpts(msg)).catch(() => {});
-      return;
-    }
-  }
-
   const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
   const ramzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(msg.from.id);
-  if ((animalRow || ramzan) && msg.text) {
+
+  if ((estetRow || animalRow || ramzan) && msg.text) {
     let text = msg.text;
     let modified = false;
-    let prefix = '';
+    const prefixParts = [];
+
+    if (estetRow) {
+      const { text: filtered, replaced } = filterProfanityEstet(text);
+      if (replaced) { text = filtered; modified = true; prefixParts.push('🎨'); }
+    }
 
     if (animalRow) {
       const { emoji, sound } = ANIMALS[animalRow.animal] || ANIMALS.pig;
       const filtered = filterProfanity(text, sound);
-      if (filtered.replaced) {
-        text = filtered.text;
-        modified = true;
-        prefix = `${emoji} `;
-      }
+      if (filtered.replaced) { text = filtered.text; modified = true; prefixParts.push(emoji); }
     }
 
     if (ramzan) {
@@ -645,6 +637,7 @@ bot.on('message', async (msg) => {
     if (modified) {
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      const prefix = prefixParts.length ? prefixParts.join('') + ' ' : '';
       bot.sendMessage(msg.chat.id, `${prefix}${nick}: ${text}`, threadOpts(msg)).catch(() => {});
     }
   }
