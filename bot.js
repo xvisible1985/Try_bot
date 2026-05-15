@@ -5,34 +5,15 @@ const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const Database = require('better-sqlite3');
-const { createWorker } = require('tesseract.js');
+// const { createWorker } = require('tesseract.js'); // OCR отключён
 
 const token = process.env.BOT_TOKEN;
 const proxy = process.env.PROXY_URL;
 const agent = proxy ? new HttpsProxyAgent(proxy) : undefined;
 const bot = new TelegramBot(token, { request: { agent } });
 
-// --- OCR ---
-let ocrWorker = null;
-(async () => {
-  try {
-    ocrWorker = await createWorker('rus+eng');
-    console.log('OCR воркер готов');
-  } catch (e) {
-    console.error('OCR воркер ошибка:', e.message);
-  }
-})();
-
 async function recognizeSticker(fileId) {
-  if (!ocrWorker) return '';
-  try {
-    const tmpPath = await bot.downloadFile(fileId, os.tmpdir());
-    const { data: { text } } = await ocrWorker.recognize(tmpPath);
-    fs.unlink(tmpPath, () => {});
-    return text.trim();
-  } catch {
-    return '';
-  }
+  return '';
 }
 
 // --- SQLite ---
