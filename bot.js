@@ -540,6 +540,7 @@ bot.onText(/\/human\b/, async (msg) => {
   db.prepare('DELETE FROM estets WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM podhalims WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM molchuns WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM dimoniacs WHERE user_id = ?').run(user.id);
 
   const tags = [
     existing ? (ANIMALS[existing.animal]?.emoji || existing.animal) : null,
