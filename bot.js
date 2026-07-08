@@ -117,6 +117,17 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dimoniacs (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    added_by INTEGER,
+    added_by_name TEXT,
+    message_count INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -701,6 +712,30 @@ bot.onText(/\/unmolchun\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `${user.username} больше не 🤐`, threadOpts(msg));
 });
 
+// --- Dimon (старик) ---
+bot.onText(/\/dimon\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const byName = await getDisplayName(msg);
+  db.prepare(
+    'INSERT OR REPLACE INTO dimoniacs (user_id, chat_id, username, added_by, added_by_name, message_count) VALUES (?, ?, ?, ?, ?, 0)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+
+  bot.sendMessage(msg.chat.id, `${user.username} теперь 🧓 старик Димон`, threadOpts(msg));
+});
+
+bot.onText(/\/undimon\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  db.prepare('DELETE FROM dimoniacs WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} больше не 🧓`, threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
@@ -781,6 +816,27 @@ bot.on('message', async (msg) => {
       bot.sendMessage(msg.chat.id, `🤐 ${nick}: 🤐`, threadOpts(msg))
         .then(sent => setTimeout(() => bot.deleteMessage(msg.chat.id, sent.message_id).catch(() => {}), 3000))
         .catch(() => {});
+      return;
+    }
+  }
+
+  // Dimon (старик) — в каждом третьем сообщении добавляем старческие обороты
+  const dimonRow = db.prepare('SELECT message_count FROM dimoniacs WHERE user_id = ?').get(msg.from.id);
+  if (dimonRow && msg.text) {
+    const newCount = dimonRow.message_count + 1;
+    db.prepare('UPDATE dimoniacs SET message_count = ? WHERE user_id = ?').run(newCount, msg.from.id);
+
+    if (newCount % 3 === 0) {
+      const oldMans = [
+        '*кашель*', 'э-э-э', 'ой батенька', '*кряхтит*', 'е-хе-хе', '*вздыхает*',
+        '*присел на пенек*', '*схватился за сердце*', '*потер спину*', '*охнул*',
+        '*прихромал*', '*помассировал ноги*', '*согнулся*', '*заболела спина*'
+      ];
+      const suffix = oldMans[Math.floor(Math.random() * oldMans.length)];
+      const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+      bot.sendMessage(msg.chat.id, `🧓 ${nick}: ${msg.text}\n${suffix}`, threadOpts(msg)).catch(() => {});
       return;
     }
   }
