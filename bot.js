@@ -4,12 +4,20 @@ const os = require('os');
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const SocksProxyAgent = require('socks-proxy-agent');
 const Database = require('better-sqlite3');
 // const { createWorker } = require('tesseract.js'); // OCR отключён
 
 const token = process.env.BOT_TOKEN;
 const proxy = process.env.PROXY_URL;
-const agent = proxy ? new HttpsProxyAgent(proxy) : undefined;
+let agent;
+if (proxy) {
+  if (proxy.startsWith('socks')) {
+    agent = new SocksProxyAgent(proxy);
+  } else {
+    agent = new HttpsProxyAgent(proxy);
+  }
+}
 const bot = new TelegramBot(token, { request: { agent } });
 
 async function recognizeSticker(fileId) {
