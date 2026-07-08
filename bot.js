@@ -822,7 +822,7 @@ bot.on('message', async (msg) => {
 
   // Dimon (старик) — в каждом третьем сообщении добавляем старческие обороты
   const dimonRow = db.prepare('SELECT message_count FROM dimoniacs WHERE user_id = ?').get(msg.from.id);
-  if (dimonRow && msg.text) {
+  if (dimonRow && msg.text && !msg.text.startsWith('/') && !msg.text.startsWith('**')) {
     const newCount = dimonRow.message_count + 1;
     db.prepare('UPDATE dimoniacs SET message_count = ? WHERE user_id = ?').run(newCount, msg.from.id);
 
