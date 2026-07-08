@@ -4,7 +4,7 @@ const os = require('os');
 const fs = require('fs');
 const TelegramBot = require('node-telegram-bot-api');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const SocksProxyAgent = require('socks-proxy-agent');
+const { SocksProxyAgent } = require('socks-proxy-agent');
 const Database = require('better-sqlite3');
 // const { createWorker } = require('tesseract.js'); // OCR отключён
 
@@ -388,12 +388,8 @@ async function poll() {
   }
   setTimeout(poll, 1000);
 }
-function deleteWebhookDirect() {
-  return new Promise((resolve) => {
-    https.get(`https://api.telegram.org/bot${token}/deleteWebhook`, res => { res.resume(); resolve(); }).on('error', resolve);
-  });
-}
-deleteWebhookDirect().then(() => skipOldUpdates()).then(() => poll());
+// skipOldUpdates().then(() => poll());
+skipOldUpdates().then(() => poll());
 
 // --- Helpers ---
 function threadOpts(msg, extra = {}) {
