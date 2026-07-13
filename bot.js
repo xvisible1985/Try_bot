@@ -12,13 +12,30 @@ const token = process.env.BOT_TOKEN;
 const proxy = process.env.PROXY_URL;
 let agent;
 if (proxy) {
+  // keepAlive is essential: the low-powered proxy server drops ~half of fresh
+  // SOCKS+Reality handshakes under concurrency, so reuse one warm tunnel
+  // connection instead of a new handshake per call. Mirrors the StickerFon3
+  // bot's proxy setup (socks5h:// → remote DNS through the tunnel).
+  const agentOpts = { keepAlive: true, keepAliveMsecs: 60000, maxSockets: 5, maxFreeSockets: 3 };
   if (proxy.startsWith('socks')) {
-    agent = new SocksProxyAgent(proxy);
+    agent = new SocksProxyAgent(proxy, agentOpts);
   } else {
-    agent = new HttpsProxyAgent(proxy);
+    agent = new HttpsProxyAgent(proxy, agentOpts);
   }
 }
-const bot = new TelegramBot(token, { request: { agent } });
+// polling: true — this bot receives commands via long-polling; without it the
+// onText/on('message') handlers below never fire. The request agent routes both
+// the getUpdates poll and all API calls through the proxy tunnel.
+const bot = new TelegramBot(token, { polling: true, request: { agent } });
+
+// Most sendMessage/deleteMessage calls below have no individual .catch. Over
+// the proxy tunnel a transient handshake failure rejects one of those promises,
+// and on Node 22 an unhandled rejection terminates the process by default.
+// Swallow it here so a proxy hiccup can't kill the bot — polling recovers on
+// its own, and a single dropped reply is harmless for this chat utility.
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandledRejection:', reason?.message || reason);
+});
 
 async function recognizeSticker(fileId) {
   return '';
@@ -973,7 +990,7 @@ bot.onText(/^\*\*(?: (.+))?/, async (msg, match) => {
   const username = await getDisplayName(msg);
   const replyTo = msg.reply_to_message?.message_id;
   bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-  bot.sendMessage(msg.chat.id, `${username} 🟣 <b><i>${text}</i></b>`, threadOpts(msg, { parse_mode: 'HTML', ...(replyTo ? { reply_to_message_id: replyTo } : {}) }));
+  bot.sendMessage(msg.chat.id, `${username} 🟣 <b><i>${text}</i></b>`, threadOpts(msg, { parse_mode: 'HTML', ...(replyTo ? { reply_to_message_id: replyTo } : {}) })).catch(() => {});
 });
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
