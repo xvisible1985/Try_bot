@@ -850,7 +850,11 @@ bot.on('message', async (msg) => {
         '*присел на пенек*', '*схватился за сердце*', '*потер спину*', '*охнул*',
         '*прихромал*', '*помассировал ноги*', '*согнулся*', '*заболела спина*'
       ];
-      const suffix = oldMans[Math.floor(Math.random() * oldMans.length)];
+      // 5% шанс: вместо обычного старческого оборота — конфузная фраза
+      const dimonSpecials = ['пукнул', 'испортил воздух', 'описался', 'уснул'];
+      const suffix = Math.random() < 0.05
+        ? `*${dimonSpecials[Math.floor(Math.random() * dimonSpecials.length)]}*`
+        : oldMans[Math.floor(Math.random() * oldMans.length)];
       const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
 
       bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
