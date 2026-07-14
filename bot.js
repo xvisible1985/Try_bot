@@ -28,6 +28,33 @@ if (proxy) {
 // the getUpdates poll and all API calls through the proxy tunnel.
 const bot = new TelegramBot(token, { polling: true, request: { agent } });
 
+// Dedupe by update_id. Long-polling over the flaky proxy tunnel occasionally
+// loses a getUpdates response in transit (socket reset mid-flight) even
+// though it already reached Telegram; the library then retries with the
+// same offset, and if both the stalled and retried requests eventually
+// resolve, the same update gets delivered — and processed/replied-to —
+// twice. Telegram's update_id is unique and increasing, so tracking a
+// bounded window of recently-seen ids is a safe, low-cost way to drop the
+// duplicate without touching every individual handler.
+const seenUpdateIds = new Set();
+const seenUpdateQueue = [];
+const MAX_SEEN_UPDATES = 500;
+const originalProcessUpdate = bot.processUpdate.bind(bot);
+bot.processUpdate = (update) => {
+  if (update.update_id != null) {
+    if (seenUpdateIds.has(update.update_id)) {
+      console.log('duplicate update skipped:', update.update_id);
+      return;
+    }
+    seenUpdateIds.add(update.update_id);
+    seenUpdateQueue.push(update.update_id);
+    if (seenUpdateQueue.length > MAX_SEEN_UPDATES) {
+      seenUpdateIds.delete(seenUpdateQueue.shift());
+    }
+  }
+  return originalProcessUpdate(update);
+};
+
 // Most sendMessage/deleteMessage calls below have no individual .catch. Over
 // the proxy tunnel a transient handshake failure rejects one of those promises,
 // and on Node 22 an unhandled rejection terminates the process by default.
