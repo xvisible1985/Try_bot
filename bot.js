@@ -255,6 +255,8 @@ const VIRUS_TOPOR_PHRASES = [
   'бабушкин холодильник шепчет мне секреты вселенной',
 ];
 
+const REACTION_INFECT_CHANCE = { 1: 0.01, 2: 0.03, 3: 0.05 };
+
 // Dahlʼs dictionary meanings for common swear roots
 const DAHL = {
   'хуй':   'ударение',
@@ -476,7 +478,7 @@ let offset = undefined;
 async function skipOldUpdates() {
   try {
     const updates = await Promise.race([
-      bot.getUpdates({ offset: -1, limit: 1, timeout: 0 }),
+      bot.getUpdates({ offset: -1, limit: 1, timeout: 0, allowed_updates: ['message', 'message_reaction'] }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
     ]);
     if (updates.length > 0) offset = updates[updates.length - 1].update_id + 1;
@@ -485,7 +487,7 @@ async function skipOldUpdates() {
 
 async function poll() {
   try {
-    const params = { timeout: 0, limit: 10 };
+    const params = { timeout: 0, limit: 10, allowed_updates: ['message', 'message_reaction'] };
     if (offset !== undefined) params.offset = offset;
     const updates = await Promise.race([
       bot.getUpdates(params),
@@ -573,6 +575,18 @@ function pushVirusRecent(chatId, entry) {
   arr.push(entry);
   while (arr.length > 3) arr.shift();
   virusRecentMessages.set(chatId, arr);
+}
+
+const messageAuthors = new Map(); // "chatId:messageId" -> { userId, username }, capped at 500
+
+function rememberMessageAuthor(chatId, messageId, author) {
+  const key = `${chatId}:${messageId}`;
+  messageAuthors.set(key, author);
+  if (messageAuthors.size > 500) messageAuthors.delete(messageAuthors.keys().next().value);
+}
+
+function getMessageAuthor(chatId, messageId) {
+  return messageAuthors.get(`${chatId}:${messageId}`);
 }
 
 // --- Commands ---
@@ -992,6 +1006,7 @@ bot.on('message', async (msg) => {
   const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const virusPriorRecent = getVirusRecent(msg.chat.id);
   pushVirusRecent(msg.chat.id, { userId: msg.from.id, username: virusNick });
+  rememberMessageAuthor(msg.chat.id, msg.message_id, { userId: msg.from.id, username: virusNick });
   if (isMuted(msg.from.id)) {
     bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
     const row = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(msg.from.id);
