@@ -908,6 +908,7 @@ const fishingTracker = new Map();
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
+  // must run first, unconditionally — otherwise muted/fisher/molchun users' messages never enter the recency buffer, breaking cough-targeting later
   const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const virusPriorRecent = getVirusRecent(msg.chat.id);
   pushVirusRecent(msg.chat.id, { userId: msg.from.id, username: virusNick });
