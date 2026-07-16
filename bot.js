@@ -1016,7 +1016,11 @@ bot.on('message', async (msg) => {
     let virusModified = false;
     let virusCoughed = false;
 
-    for (const type of getActiveVirusProcedureTypes(msg.from.id)) {
+    // topor sorted last: its full-text replacement should win over any earlier
+    // ukol/klizma append (talking nonsense overrides an appended pain/gas phrase,
+    // not the other way around) rather than depending on unspecified DB row order
+    const virusProcedureTypes = getActiveVirusProcedureTypes(msg.from.id).sort((a) => (a === 'topor' ? 1 : -1));
+    for (const type of virusProcedureTypes) {
       if (Math.random() < SIDE_EFFECT_CHANCE) {
         virusModified = true;
         if (type === 'ukol') virusText += `\n${pick(VIRUS_UKOL_PHRASES)}`;
