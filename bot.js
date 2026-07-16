@@ -901,6 +901,7 @@ function applyVirusProcedure(type) {
     if (!await isAdmin(msg)) return;
     const user = await resolveUser(msg);
     if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+    if (user.id === bot.id) return;
 
     const { durationMs } = VIRUS_PROCEDURES[type];
     const expiresAt = Math.floor((Date.now() + durationMs) / 1000);
