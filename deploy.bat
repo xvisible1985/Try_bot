@@ -19,11 +19,14 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM 3. Restart bot
-echo [3/3] Restarting bot...
-taskkill //F //IM node.exe 2>nul
-timeout /t 2 /nobreak >nul
-start "" node bot.js
+REM 3. Restart bot via PM2 (touches only this process, not other apps on the server)
+echo [3/3] Restarting bot via PM2...
+pm2 restart tg-bot --update-env
+if %errorlevel% neq 0 (
+    echo tg-bot not registered yet, starting it...
+    pm2 start bot.js --name tg-bot
+)
+pm2 save
 
 echo.
 echo [TG-BOT] Deploy complete!
