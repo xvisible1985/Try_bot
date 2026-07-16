@@ -152,3 +152,54 @@ rows, regardless of whether a cough also fired that message.
   unable to find infection targets until 3 fresh messages accumulate. Judged
   acceptable for a game mechanic, consistent with other in-memory-only
   trackers already in this file (e.g. `fishingTracker`).
+
+## Addendum: reaction-based infection
+
+A second infection vector, added after the initial build: a currently-infected
+(non-immune) user can infect a healthy one by reacting (any emoji, added —
+not removed) to that healthy user's message.
+
+**Why a separate mechanism from the cough path:** Telegram's `message_reaction`
+update reports who reacted and which message, but never who *wrote* that
+message — so the bot needs its own message-id → author lookup, populated as
+messages come in, independent of the 3-message `recentMessages` cough buffer.
+
+**Requires enabling `message_reaction` updates.** The bot's `getUpdates` calls
+currently pass no `allowed_updates`, so Telegram reaction updates are never
+delivered. Both `poll()` and `skipOldUpdates()` must add
+`allowed_updates: ['message', 'message_reaction']`.
+
+**Message-author map:** `messageAuthors: Map<"chatId:messageId", {userId, username}>`,
+populated unconditionally at the top of the existing `bot.on('message', ...)`
+handler (same place `virusNick`/`virusPriorRecent` are set). Capped at 500
+entries, FIFO eviction (delete the oldest key once the cap is exceeded) —
+same in-memory-only, restart-resets trade-off already accepted for
+`recentMessages`/`fishingTracker`.
+
+**Per-stage infection chance on reaction** (independent constant set from the
+cough path's `INFECT_CHANCE`): stage 1 → 1%, stage 2 → 3%, stage 3 → 5%.
+Patient zero reacts at the stage-3 rate (same "always stage 3" treatment used
+for cough cadence).
+
+**`message_reaction` handler logic**, in order:
+1. Ignore if the reaction has no `user` (anonymous/channel reactions via
+   `actor_chat` aren't supported).
+2. Ignore if `new_reaction` is empty (a removal, not an addition).
+3. Look up the reacted-to message's author via `messageAuthors`; ignore if
+   unknown (message too old / bot restarted since).
+4. Ignore self-reactions (author reacting to their own message).
+5. Ignore if the author is already infected or immune (can only infect the
+   healthy).
+6. Ignore if the reactor isn't currently infected (no row, or immune).
+7. Roll the reactor's stage-based chance; on success, insert the author as a
+   new stage-1 infection and announce it.
+
+**Announcement wording, both infection paths:** to let players see *who*
+infected whom, both the cough-spread announcement and this reaction-spread
+announcement now read `🦠 {ник} заразился(-ась) от {источник}!` (previously
+the cough path's announcement omitted the source). The source is whoever's
+`added_by`/`added_by_name` gets written on the new row — the cougher for the
+cough path, the reacting sick user for the reaction path. This was already
+being stored (via the existing `added_by`/`added_by_name` columns) but never
+surfaced in a message; `/epidemic`'s listing intentionally still omits it per
+user request — only the announcement message shows the source.
