@@ -889,11 +889,15 @@ bot.onText(/\/0patient\b/, async (msg) => {
   if (user.id === bot.id) return;
 
   const byName = await getDisplayName(msg);
+  // @-prefix to match the cough-spread infection path's stored username
+  // convention (virusNick), so /epidemic and the hourly broadcast show
+  // patient zero and naturally-infected users in the same format.
+  const targetNick = msg.reply_to_message.from.username ? `@${user.username}` : user.username;
   db.prepare(
     'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 3, 1, 0, 0, ?, ?)'
-  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+  ).run(user.id, msg.chat.id, targetNick, msg.from.id, byName);
 
-  bot.sendMessage(msg.chat.id, `☣️ ${user.username} — нулевой пациент эпидемии DedoVirus.2026!`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `☣️ ${targetNick} — нулевой пациент эпидемии DedoVirus.2026!`, threadOpts(msg));
 });
 
 function applyVirusProcedure(type) {
