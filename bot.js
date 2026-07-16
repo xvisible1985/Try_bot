@@ -533,6 +533,35 @@ async function isAdmin(msg) {
   }
 }
 
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function getVirusRow(userId) {
+  return db.prepare('SELECT * FROM virus_infections WHERE user_id = ?').get(userId);
+}
+
+function getActiveVirusProcedureTypes(userId) {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare('DELETE FROM virus_procedures WHERE user_id = ? AND expires_at < ?').run(userId, now);
+  return db.prepare('SELECT procedure_type FROM virus_procedures WHERE user_id = ?').all(userId).map(r => r.procedure_type);
+}
+
+function getVirusProcedureBonus(userId) {
+  return getActiveVirusProcedureTypes(userId).reduce((sum, t) => sum + (VIRUS_PROCEDURES[t]?.bonus || 0), 0);
+}
+
+function rollVirusStageChange(currentStage, improveChance, r = Math.random()) {
+  if (r < improveChance) {
+    if (currentStage <= 1) return { type: 'cured' };
+    return { type: 'improve', newStage: currentStage - 1 };
+  }
+  if (r < improveChance + WORSEN_CHANCE) {
+    return { type: 'worsen', newStage: Math.min(3, currentStage + 1) };
+  }
+  return { type: 'none' };
+}
+
 // --- Commands ---
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, 'привет я бот');
