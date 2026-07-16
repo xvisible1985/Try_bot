@@ -174,6 +174,29 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS virus_infections (
+    user_id INTEGER PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    username TEXT,
+    stage INTEGER NOT NULL DEFAULT 1,
+    is_patient_zero INTEGER DEFAULT 0,
+    immune INTEGER DEFAULT 0,
+    message_count INTEGER DEFAULT 0,
+    added_by INTEGER,
+    added_by_name TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS virus_procedures (
+    user_id INTEGER NOT NULL,
+    procedure_type TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, procedure_type)
+  )
+`);
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
@@ -196,6 +219,40 @@ const COMPLIMENTS = [
   'твоя улыбка освещает комнату', 'ты источник позитива', 'ты восхитителен',
   'у тебя прекрасные манеры', 'ты настоящий друг', 'ты очень интересный собеседник',
   'ты умеешь поднять настроение', 'с тобой хочется дружить', 'ты просто супер',
+];
+
+// --- DedoVirus.2026 ---
+const COUGH_CHANCE = 0.30;
+const INFECT_CHANCE = 0.25;
+const BASE_IMPROVE_CHANCE = 0.10;
+const WORSEN_CHANCE = 0.15;
+const SIDE_EFFECT_CHANCE = 0.20;
+
+const VIRUS_COUGH_EVERY = { 1: 7, 2: 5, 3: 3 };
+
+const VIRUS_PROCEDURES = {
+  ukol:   { bonus: 0.02, durationMs: 6 * 60 * 60 * 1000 },
+  klizma: { bonus: 0.03, durationMs: 2 * 24 * 60 * 60 * 1000 },
+  topor:  { bonus: 0.05, durationMs: 24 * 60 * 60 * 1000 },
+};
+
+const VIRUS_STAGE1_PHRASE = '*кхе-кхе*';
+
+const VIRUS_STAGE2_PHRASES = [
+  '*кхе-кхе-кхе*', 'ох, опять эта хворь', '*харкнул в платок*', 'ломит кости',
+  '*температурит*', 'знобит что-то',
+];
+
+const VIRUS_STAGE3_EXTRAS = [
+  'описался', 'пукнул', 'потерял сознание на секунду', 'обмочился',
+];
+
+const VIRUS_UKOL_PHRASES = ['*схватился за попу*', '*почесал место укола*', 'ай, больно было'];
+const VIRUS_KLIZMA_PHRASES = ['*пукнул*', '*извинился за газы*', '*покраснел от стыда*'];
+const VIRUS_TOPOR_PHRASES = [
+  'капуста любит понедельник в трёх соснах',
+  'а знаете, лошади тоже смотрят телевизор по вторникам',
+  'бабушкин холодильник шепчет мне секреты вселенной',
 ];
 
 // Dahlʼs dictionary meanings for common swear roots
