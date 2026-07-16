@@ -881,6 +881,21 @@ bot.onText(/\/undimon\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `${user.username} больше не 🧓`, threadOpts(msg));
 });
 
+// --- DedoVirus.2026: patient zero ---
+bot.onText(/\/0patient\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+  if (user.id === bot.id) return;
+
+  const byName = await getDisplayName(msg);
+  db.prepare(
+    'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 3, 1, 0, 0, ?, ?)'
+  ).run(user.id, msg.chat.id, user.username, msg.from.id, byName);
+
+  bot.sendMessage(msg.chat.id, `☣️ ${user.username} — нулевой пациент эпидемии DedoVirus.2026!`, threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
