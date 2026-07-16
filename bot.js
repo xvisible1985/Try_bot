@@ -896,6 +896,26 @@ bot.onText(/\/0patient\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `☣️ ${user.username} — нулевой пациент эпидемии DedoVirus.2026!`, threadOpts(msg));
 });
 
+function applyVirusProcedure(type) {
+  return async (msg) => {
+    if (!await isAdmin(msg)) return;
+    const user = await resolveUser(msg);
+    if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+    const { durationMs } = VIRUS_PROCEDURES[type];
+    const expiresAt = Math.floor((Date.now() + durationMs) / 1000);
+    db.prepare(
+      'INSERT OR REPLACE INTO virus_procedures (user_id, procedure_type, expires_at) VALUES (?, ?, ?)'
+    ).run(user.id, type, expiresAt);
+
+    bot.sendMessage(msg.chat.id, `${user.username} получил процедуру: ${type}`, threadOpts(msg));
+  };
+}
+
+bot.onText(/\/ukol\b/, applyVirusProcedure('ukol'));
+bot.onText(/\/klizma\b/, applyVirusProcedure('klizma'));
+bot.onText(/\/topor\b/, applyVirusProcedure('topor'));
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
