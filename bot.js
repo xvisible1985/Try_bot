@@ -936,6 +936,20 @@ bot.onText(/\/epidemic\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, formatVirusList() || 'Эпидемии нет', threadOpts(msg));
 });
 
+bot.onText(/\/cure\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  const row = getVirusRow(user.id);
+  if (!row) return bot.sendMessage(msg.chat.id, `${user.username} не заражён`, threadOpts(msg));
+  if (row.is_patient_zero) return bot.sendMessage(msg.chat.id, 'Нулевого пациента вылечить нельзя, используй /endvirus', threadOpts(msg));
+
+  db.prepare('DELETE FROM virus_infections WHERE user_id = ?').run(user.id);
+  db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(user.id);
+  bot.sendMessage(msg.chat.id, `${user.username} вылечен от DedoVirus`, threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
