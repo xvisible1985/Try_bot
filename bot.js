@@ -1009,6 +1009,72 @@ bot.on('message', async (msg) => {
     }
   }
 
+  // --- DedoVirus.2026: cough / infection / stage change / procedure side effects ---
+  if (msg.text && !msg.text.startsWith('/') && !msg.text.startsWith('**')) {
+    const virusRow = getVirusRow(msg.from.id);
+    let virusText = msg.text;
+    let virusModified = false;
+    let virusCoughed = false;
+
+    for (const type of getActiveVirusProcedureTypes(msg.from.id)) {
+      if (Math.random() < SIDE_EFFECT_CHANCE) {
+        virusModified = true;
+        if (type === 'ukol') virusText += `\n${pick(VIRUS_UKOL_PHRASES)}`;
+        else if (type === 'klizma') virusText += `\n${pick(VIRUS_KLIZMA_PHRASES)}`;
+        else if (type === 'topor') virusText = pick(VIRUS_TOPOR_PHRASES);
+      }
+    }
+
+    if (virusRow && !virusRow.immune) {
+      const newCount = virusRow.message_count + 1;
+      db.prepare('UPDATE virus_infections SET message_count = ? WHERE user_id = ?').run(newCount, msg.from.id);
+
+      const every = VIRUS_COUGH_EVERY[virusRow.stage] || VIRUS_COUGH_EVERY[3];
+      if (newCount % every === 0 && Math.random() < COUGH_CHANCE) {
+        virusCoughed = true;
+        virusModified = true;
+
+        let suffix;
+        if (virusRow.stage === 1) suffix = VIRUS_STAGE1_PHRASE;
+        else if (virusRow.stage === 3 && Math.random() < 0.05) suffix = `*${pick(VIRUS_STAGE3_EXTRAS)}*`;
+        else suffix = pick(VIRUS_STAGE2_PHRASES);
+        virusText += `\n${suffix}`;
+
+        for (const entry of virusPriorRecent) {
+          if (getVirusRow(entry.userId)) continue;
+          if (Math.random() < INFECT_CHANCE) {
+            db.prepare(
+              'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?)'
+            ).run(entry.userId, msg.chat.id, entry.username, msg.from.id, virusNick);
+            bot.sendMessage(msg.chat.id, `🦠 ${entry.username} заразился(-ась)!`, threadOpts(msg)).catch(() => {});
+          }
+        }
+
+        if (!virusRow.is_patient_zero) {
+          const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
+          const result = rollVirusStageChange(virusRow.stage, improveChance);
+          if (result.type === 'cured') {
+            db.prepare('UPDATE virus_infections SET immune = 1 WHERE user_id = ?').run(msg.from.id);
+            db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(msg.from.id);
+            bot.sendMessage(msg.chat.id, `✅ ${virusNick} полностью выздоровел и получил иммунитет!`, threadOpts(msg)).catch(() => {});
+          } else if (result.type === 'improve') {
+            db.prepare('UPDATE virus_infections SET stage = ?, message_count = 0 WHERE user_id = ?').run(result.newStage, msg.from.id);
+            bot.sendMessage(msg.chat.id, `💊 ${virusNick} идёт на поправку (стадия ${virusRow.stage}→${result.newStage})`, threadOpts(msg)).catch(() => {});
+          } else if (result.type === 'worsen') {
+            db.prepare('UPDATE virus_infections SET stage = ?, message_count = 0 WHERE user_id = ?').run(result.newStage, msg.from.id);
+            bot.sendMessage(msg.chat.id, `🤒 ${virusNick} стало хуже (стадия ${virusRow.stage}→${result.newStage})`, threadOpts(msg)).catch(() => {});
+          }
+        }
+      }
+    }
+
+    if (virusModified) {
+      bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+      bot.sendMessage(msg.chat.id, `${virusCoughed ? '🦠 ' : ''}${virusNick}: ${virusText}`, threadOpts(msg)).catch(() => {});
+      return;
+    }
+  }
+
   // Sticker OCR — only static stickers (.webp), skip animated/video
   if (msg.sticker && !msg.sticker.is_animated && !msg.sticker.is_video) {
     const stickerText = await recognizeSticker(msg.sticker.file_id);
