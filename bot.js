@@ -917,6 +917,25 @@ bot.onText(/\/ukol\b/, applyVirusProcedure('ukol'));
 bot.onText(/\/klizma\b/, applyVirusProcedure('klizma'));
 bot.onText(/\/topor\b/, applyVirusProcedure('topor'));
 
+function formatVirusList() {
+  const rows = db.prepare('SELECT * FROM virus_infections WHERE immune = 0 ORDER BY is_patient_zero DESC, stage DESC').all();
+  if (!rows.length) return null;
+  const lines = ['☣️ DedoVirus.2026'];
+  for (const row of rows) {
+    const label = row.is_patient_zero ? 'нулевой пациент' : `стадия ${row.stage}`;
+    const emoji = row.is_patient_zero ? '💀' : row.stage === 1 ? '🤧' : row.stage === 2 ? '🧟' : '🤢';
+    const procs = getActiveVirusProcedureTypes(row.user_id);
+    const procText = procs.length ? ` (${procs.map(p => `💉 ${p}`).join(', ')})` : '';
+    lines.push(`${emoji} ${row.username} — ${label}${procText}`);
+  }
+  return lines.join('\n');
+}
+
+bot.onText(/\/epidemic\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  bot.sendMessage(msg.chat.id, formatVirusList() || 'Эпидемии нет', threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
