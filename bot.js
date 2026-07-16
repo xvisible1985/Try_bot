@@ -950,6 +950,13 @@ bot.onText(/\/cure\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `${user.username} вылечен от DedoVirus`, threadOpts(msg));
 });
 
+bot.onText(/\/endvirus\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  db.exec('DELETE FROM virus_infections');
+  db.exec('DELETE FROM virus_procedures');
+  bot.sendMessage(msg.chat.id, 'Эпидемия DedoVirus.2026 закончена', threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
