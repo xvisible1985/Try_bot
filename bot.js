@@ -2,6 +2,7 @@ require('dotenv').config();
 const https = require('https');
 const os = require('os');
 const fs = require('fs');
+const path = require('path');
 const TelegramBot = require('node-telegram-bot-api');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
@@ -1022,6 +1023,20 @@ bot.onText(/^\*\*(?: (.+))?/, async (msg, match) => {
   const replyTo = msg.reply_to_message?.message_id;
   bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
   bot.sendMessage(msg.chat.id, `${username} 🟣 <b><i>${text}</i></b>`, threadOpts(msg, { parse_mode: 'HTML', ...(replyTo ? { reply_to_message_id: replyTo } : {}) })).catch(() => {});
+});
+
+const IMAGES_DIR = path.join(__dirname, 'images');
+
+bot.onText(/\/msg\s+"([^"]+)"\s+"([^"]*)"/, async (msg, match) => {
+  const [, fileName, text] = match;
+  const filePath = path.resolve(IMAGES_DIR, fileName);
+  if (!filePath.startsWith(IMAGES_DIR + path.sep) || !fs.existsSync(filePath)) {
+    return bot.sendMessage(msg.chat.id, text, threadOpts(msg));
+  }
+  bot.sendPhoto(msg.chat.id, filePath, { caption: text, ...threadOpts(msg) }).catch((err) => {
+    console.error('sendPhoto error:', err.message);
+    bot.sendMessage(msg.chat.id, text, threadOpts(msg));
+  });
 });
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
