@@ -562,6 +562,19 @@ function rollVirusStageChange(currentStage, improveChance, r = Math.random()) {
   return { type: 'none' };
 }
 
+const virusRecentMessages = new Map(); // chatId -> [{ userId, username }], capped at 3
+
+function getVirusRecent(chatId) {
+  return virusRecentMessages.get(chatId) || [];
+}
+
+function pushVirusRecent(chatId, entry) {
+  const arr = virusRecentMessages.get(chatId) || [];
+  arr.push(entry);
+  while (arr.length > 3) arr.shift();
+  virusRecentMessages.set(chatId, arr);
+}
+
 // --- Commands ---
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, 'привет я бот');
@@ -895,6 +908,9 @@ const fishingTracker = new Map();
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
+  const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const virusPriorRecent = getVirusRecent(msg.chat.id);
+  pushVirusRecent(msg.chat.id, { userId: msg.from.id, username: virusNick });
   if (isMuted(msg.from.id)) {
     bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
     const row = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(msg.from.id);
