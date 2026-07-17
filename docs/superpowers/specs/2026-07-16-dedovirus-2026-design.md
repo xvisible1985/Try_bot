@@ -153,6 +153,65 @@ rows, regardless of whether a cough also fired that message.
   acceptable for a game mechanic, consistent with other in-memory-only
   trackers already in this file (e.g. `fishingTracker`).
 
+## Addendum: patient card and self-cure via `/immune`
+
+A third way to track and eventually escape the disease, alongside the
+automatic cough-roll cure and the admin `/cure` override: a player's own
+accumulated "energy," visible via a personal status card.
+
+**`/patient`** — no reply: shows the caller's own card (name via
+`getDisplayName`). Reply + caller is admin: shows the replied-to user's card
+instead. Reply + caller is NOT admin: the reply is ignored, still shows the
+caller's own card (matches this feature's existing "admin can act on anyone,
+everyone else only on themselves" convention, e.g. `/mute`/`/dimon` vs. how
+non-admins can't target others).
+
+- No `virus_infections` row at all → `{ник} здоров`.
+- Row with `immune = 1` → `{ник} имеет иммунитет к DedoVirus.2026`.
+- Otherwise, the full card:
+  ```
+  🤒 Карточка больного: @petya
+  📅 Заражён: 16.07.2026
+  🧬 Стадия: 2
+  🌡 Температура: 38.3°C
+  💊 Процедуры: 💉 ukol
+  ⚡ Энергия: 67/100
+  ```
+  `Стадия` reads `нулевой пациент` instead of a number for patient zero.
+  `Температура` is a formula off `stage` plus a small random jitter
+  (`36.6 + stage*0.6 + random(-0.3..0.3)`), recomputed fresh on every call —
+  not stored. `Процедуры` reuses `VIRUS_PROCEDURE_ICONS`/
+  `getActiveVirusProcedureTypes` exactly as `/epidemic` already does; `нет`
+  if none active. `Энергия` gets a parenthetical `(иммунитету это не
+  поможет)` suffix for patient zero.
+
+**Energy** — a new `energy INTEGER DEFAULT 0` column on `virus_infections`
+(same migration pattern as `reached_stage2`: added to the `CREATE TABLE` for
+fresh installs, plus a guarded `ALTER TABLE` for the already-deployed
+production DB). Increments by 1 on every ordinary text message from a
+currently-infected, non-immune user — including patient zero — capped at
+100, in the exact same `if (virusRow && !virusRow.immune)` gate that already
+increments `message_count` for cough cadence. The first time a user's energy
+reaches 100 (transitioning from below 100), the bot announces it
+unprompted: `⚡ {ник} накопил(а) 100 энергии — теперь можно попробовать
+/immune!`.
+
+**`/immune`** — self-only (no reply, like `/try`/`/dice`), usable by anyone
+currently infected (has a row, not immune) with `energy = 100`. Calling it
+always resets `energy` to 0 regardless of outcome. Patient zero: always a
+guaranteed no-op failure message (`иммунная система бессильна против
+нулевого пациента`) — they still accumulate and can spend energy, per
+explicit user decision, but it never does anything for them, consistent with
+patient zero being permanently excluded from every other cure/improve path
+in this feature. Everyone else: a 50% roll. Success at stage 2/3 → stage−1
+(same shape as the automatic improve branch). Success at stage 1 → full
+cure + immunity, **without** requiring `reached_stage2` — this is
+deliberately a separate, unconditional mechanic from the passive cough-roll
+self-cure gate (earning 100 energy is itself the "have you proven yourself"
+condition, replacing the reached-stage-2 requirement for this specific
+path). Failure at any stage → `иммунная система не справилась, энергия
+потрачена впустую`, no stage change.
+
 ## Addendum: reaction-based infection
 
 A second infection vector, added after the initial build: a currently-infected
