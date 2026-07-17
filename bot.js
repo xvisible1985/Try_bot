@@ -247,6 +247,16 @@ const VIRUS_STAGE3_EXTRAS = [
   'описался', 'пукнул', 'потерял сознание на секунду', 'обмочился',
 ];
 
+const VIRUS_COUGH_CONTAINED_PHRASES = [
+  '*прикрыл рот*', '*успел прикрыться платком*', '*откашлялся в сторону*',
+  '*сдержался*', '*обошлось без жертв*',
+];
+
+const VIRUS_COUGH_SPREAD_PHRASES = [
+  '*распустил свои бациллы*', '*обчихал всех вокруг*', '*не прикрылся*',
+  '*разбрызгал заразу по округе*', '*заразил воздух вокруг*',
+];
+
 const VIRUS_UKOL_PHRASES = ['*схватился за попу*', '*почесал место укола*', 'ай, больно было'];
 const VIRUS_KLIZMA_PHRASES = ['*пукнул*', '*извинился за газы*', '*покраснел от стыда*'];
 const VIRUS_TOPOR_PHRASES = [
@@ -1131,15 +1141,18 @@ bot.on('message', async (msg) => {
         else suffix = pick(VIRUS_STAGE2_PHRASES);
         virusText += `\n${suffix}`;
 
+        let anyInfected = false;
         for (const entry of virusPriorRecent) {
           if (getVirusRow(entry.userId)) continue;
           if (Math.random() < INFECT_CHANCE) {
+            anyInfected = true;
             db.prepare(
               'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?)'
             ).run(entry.userId, msg.chat.id, entry.username, msg.from.id, virusNick);
             bot.sendMessage(msg.chat.id, `🦠 ${entry.username} заразился(-ась) от ${virusNick}!`, threadOpts(msg)).catch(() => {});
           }
         }
+        virusText += `\n${anyInfected ? pick(VIRUS_COUGH_SPREAD_PHRASES) : pick(VIRUS_COUGH_CONTAINED_PHRASES)}`;
 
         if (!virusRow.is_patient_zero) {
           const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
