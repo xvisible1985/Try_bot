@@ -582,7 +582,7 @@ function getVirusProcedureBonus(userId) {
   return getActiveVirusProcedureTypes(userId).reduce((sum, t) => sum + (VIRUS_PROCEDURES[t]?.bonus || 0), 0);
 }
 
-function rollVirusStageChange(currentStage, improveChance, everReachedStage2, r = Math.random()) {
+function rollVirusStageChange(currentStage, improveChance, everReachedStage2, maxStage, r = Math.random()) {
   const canImprove = currentStage > 1 || everReachedStage2;
   if (canImprove && r < improveChance) {
     if (currentStage <= 1) return { type: 'cured' };
@@ -590,7 +590,7 @@ function rollVirusStageChange(currentStage, improveChance, everReachedStage2, r 
   }
   const worsenFloor = canImprove ? improveChance : 0;
   if (r < worsenFloor + WORSEN_CHANCE) {
-    return { type: 'worsen', newStage: Math.min(3, currentStage + 1) };
+    return { type: 'worsen', newStage: Math.min(maxStage, currentStage + 1) };
   }
   return { type: 'none' };
 }
