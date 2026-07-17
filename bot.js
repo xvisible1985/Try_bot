@@ -936,12 +936,12 @@ const VIRUS_PROCEDURE_PUBLIC_TARGETS = { klizma: 'anokibdsmovna', massage: 'murr
 function applyVirusProcedure(type) {
   return async (msg) => {
     const user = await resolveUser(msg);
+    const allowedTarget = VIRUS_PROCEDURE_PUBLIC_TARGETS[type];
+    const isPublicTarget = !!user && allowedTarget && user.username?.toLowerCase() === allowedTarget;
+    if (!isPublicTarget && !await isAdmin(msg)) return;
+
     if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
     if (user.id === bot.id) return;
-
-    const allowedTarget = VIRUS_PROCEDURE_PUBLIC_TARGETS[type];
-    const isPublicTarget = allowedTarget && user.username?.toLowerCase() === allowedTarget;
-    if (!isPublicTarget && !await isAdmin(msg)) return;
 
     const { durationMs } = VIRUS_PROCEDURES[type];
     const expiresAt = Math.floor((Date.now() + durationMs) / 1000);
