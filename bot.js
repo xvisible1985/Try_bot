@@ -951,11 +951,10 @@ function formatVirusList() {
   if (!rows.length) return null;
   const lines = ['☣️ DedoVirus.2026'];
   for (const row of rows) {
-    const label = row.is_patient_zero ? 'нулевой пациент' : `стадия ${row.stage}`;
     const emoji = row.is_patient_zero ? '💀' : row.stage === 1 ? '🤧' : row.stage === 2 ? '🧟' : '🤢';
     const procs = getActiveVirusProcedureTypes(row.user_id);
     const procText = procs.length ? ` (${procs.map(p => `💉 ${p}`).join(', ')})` : '';
-    lines.push(`${emoji} ${row.username} — ${label}${procText}`);
+    lines.push(`${emoji} ${row.username}${procText}`);
   }
   const immuneRows = db.prepare('SELECT username FROM virus_infections WHERE immune = 1 ORDER BY created_at').all();
   lines.push('');
