@@ -1241,7 +1241,7 @@ bot.on('message', async (msg) => {
         for (const entry of virusPriorRecent) {
           const existingRow = getVirusRow(entry.userId);
           if (existingRow) {
-            const canMutate = virusRow.strain === 'alpha' && virusRow.stage === 3 && existingRow.strain === 'alpha';
+            const canMutate = entry.userId !== msg.from.id && virusRow.strain === 'alpha' && virusRow.stage === 3 && existingRow.strain === 'alpha';
             if (canMutate && Math.random() < VIRUS_MUTATION_CHANCE) {
               db.prepare(
                 'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, strain, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?, ?)'
