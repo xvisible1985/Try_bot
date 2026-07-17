@@ -27,7 +27,7 @@ if (proxy) {
 // polling: true — this bot receives commands via long-polling; without it the
 // onText/on('message') handlers below never fire. The request agent routes both
 // the getUpdates poll and all API calls through the proxy tunnel.
-const bot = new TelegramBot(token, { polling: true, request: { agent } });
+const bot = new TelegramBot(token, { polling: { autoStart: false }, request: { agent } });
 
 // Dedupe by update_id. Long-polling over the flaky proxy tunnel occasionally
 // loses a getUpdates response in transit (socket reset mid-flight) even
