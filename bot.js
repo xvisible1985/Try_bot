@@ -1005,6 +1005,37 @@ bot.onText(/\/endvirus\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, 'Эпидемия DedoVirus.2026 закончена', threadOpts(msg));
 });
 
+bot.onText(/\/patient\b/, async (msg) => {
+  let targetId = msg.from.id;
+  let targetNick = await getDisplayName(msg);
+  if (msg.reply_to_message && await isAdmin(msg)) {
+    const user = await resolveUser(msg);
+    targetId = user.id;
+    targetNick = user.username;
+  }
+
+  const row = getVirusRow(targetId);
+  if (!row) return bot.sendMessage(msg.chat.id, `${targetNick} здоров`, threadOpts(msg));
+  if (row.immune) return bot.sendMessage(msg.chat.id, `${targetNick} имеет иммунитет к DedoVirus.2026`, threadOpts(msg));
+
+  const infectedDate = new Date(row.created_at * 1000).toLocaleDateString('ru-RU');
+  const temp = (36.6 + row.stage * 0.6 + (Math.random() * 0.6 - 0.3)).toFixed(1);
+  const procs = getActiveVirusProcedureTypes(targetId);
+  const procText = procs.length ? procs.map(p => `${VIRUS_PROCEDURE_ICONS[p] || '💉'} ${p}`).join(', ') : 'нет';
+  const stageLabel = row.is_patient_zero ? 'нулевой пациент' : `${row.stage}`;
+  const energyLine = `⚡ Энергия: ${row.energy}/100${row.is_patient_zero ? ' (иммунитету это не поможет)' : ''}`;
+
+  const lines = [
+    `🤒 Карточка больного: ${targetNick}`,
+    `📅 Заражён: ${infectedDate}`,
+    `🧬 Стадия: ${stageLabel}`,
+    `🌡 Температура: ${temp}°C`,
+    `💊 Процедуры: ${procText}`,
+    energyLine,
+  ];
+  bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
