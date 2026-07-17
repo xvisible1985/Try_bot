@@ -1230,7 +1230,8 @@ bot.on('message', async (msg) => {
         }
 
         let suffix;
-        if (virusRow.stage === 1) suffix = VIRUS_STAGE1_PHRASE;
+        if (virusRow.strain === 'beta' && virusRow.stage === 4) suffix = pick(VIRUS_SEXZOMBIE_PHRASES);
+        else if (virusRow.stage === 1) suffix = VIRUS_STAGE1_PHRASE;
         else if (virusRow.stage === 3 && Math.random() < 0.05) suffix = `*${pick(VIRUS_STAGE3_EXTRAS)}*`;
         else suffix = pick(VIRUS_STAGE2_PHRASES);
         if (!massaged) virusText += `\n${suffix}`;
@@ -1248,9 +1249,10 @@ bot.on('message', async (msg) => {
         }
         if (!massaged) virusText += `\n${anyInfected ? pick(VIRUS_COUGH_SPREAD_PHRASES) : pick(VIRUS_COUGH_CONTAINED_PHRASES)}`;
 
-        if (!virusRow.is_patient_zero) {
+        if (!virusRow.is_patient_zero && !(virusRow.strain === 'beta' && virusRow.stage === 4)) {
           const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
-          const result = rollVirusStageChange(virusRow.stage, improveChance, !!virusRow.reached_stage2);
+          const maxStage = virusRow.strain === 'beta' ? 4 : 3;
+          const result = rollVirusStageChange(virusRow.stage, improveChance, !!virusRow.reached_stage2, maxStage);
           if (result.type === 'cured') {
             db.prepare('UPDATE virus_infections SET immune = 1 WHERE user_id = ?').run(msg.from.id);
             db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(msg.from.id);
@@ -1258,6 +1260,9 @@ bot.on('message', async (msg) => {
           } else if (result.type === 'improve') {
             db.prepare('UPDATE virus_infections SET stage = ?, message_count = 0 WHERE user_id = ?').run(result.newStage, msg.from.id);
             bot.sendMessage(msg.chat.id, `💊 ${virusNick} идёт на поправку (стадия ${virusRow.stage}→${result.newStage})`, threadOpts(msg)).catch(() => {});
+          } else if (result.type === 'worsen' && result.newStage === 4) {
+            db.prepare('UPDATE virus_infections SET stage = 4, message_count = 0, reached_stage2 = 1 WHERE user_id = ?').run(msg.from.id);
+            bot.sendMessage(msg.chat.id, `🧟 ${virusNick} превратился(-ась) в секс-зомби! Стал(а) молодым(ой), дерзким(ой) и пристаёт ко всем подряд!`, threadOpts(msg)).catch(() => {});
           } else if (result.type === 'worsen') {
             db.prepare('UPDATE virus_infections SET stage = ?, message_count = 0, reached_stage2 = 1 WHERE user_id = ?').run(result.newStage, msg.from.id);
             bot.sendMessage(msg.chat.id, `🤒 ${virusNick} стало хуже (стадия ${virusRow.stage}→${result.newStage})`, threadOpts(msg)).catch(() => {});
