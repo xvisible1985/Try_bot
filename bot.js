@@ -1011,7 +1011,7 @@ bot.onText(/\/patient\b/, async (msg) => {
   if (msg.reply_to_message && await isAdmin(msg)) {
     const user = await resolveUser(msg);
     targetId = user.id;
-    targetNick = user.username;
+    targetNick = msg.reply_to_message.from.username ? `@${user.username}` : user.username;
   }
 
   const row = getVirusRow(targetId);
