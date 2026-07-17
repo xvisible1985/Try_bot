@@ -1229,8 +1229,9 @@ bot.on('message', async (msg) => {
           virusModified = true;
         }
 
+        const isZombie = virusRow.strain === 'beta' && virusRow.stage === 4;
         let suffix;
-        if (virusRow.strain === 'beta' && virusRow.stage === 4) suffix = pick(VIRUS_SEXZOMBIE_PHRASES);
+        if (isZombie) suffix = pick(VIRUS_SEXZOMBIE_PHRASES);
         else if (virusRow.stage === 1) suffix = VIRUS_STAGE1_PHRASE;
         else if (virusRow.stage === 3 && Math.random() < 0.05) suffix = `*${pick(VIRUS_STAGE3_EXTRAS)}*`;
         else suffix = pick(VIRUS_STAGE2_PHRASES);
@@ -1249,7 +1250,7 @@ bot.on('message', async (msg) => {
         }
         if (!massaged) virusText += `\n${anyInfected ? pick(VIRUS_COUGH_SPREAD_PHRASES) : pick(VIRUS_COUGH_CONTAINED_PHRASES)}`;
 
-        if (!virusRow.is_patient_zero && !(virusRow.strain === 'beta' && virusRow.stage === 4)) {
+        if (!virusRow.is_patient_zero && !isZombie) {
           const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
           const maxStage = virusRow.strain === 'beta' ? 4 : 3;
           const result = rollVirusStageChange(virusRow.stage, improveChance, !!virusRow.reached_stage2, maxStage);
