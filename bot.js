@@ -1006,7 +1006,7 @@ bot.on('message', async (msg) => {
   const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const virusPriorRecent = getVirusRecent(msg.chat.id);
   pushVirusRecent(msg.chat.id, { userId: msg.from.id, username: virusNick });
-  rememberMessageAuthor(msg.chat.id, msg.message_id, { userId: msg.from.id, username: virusNick });
+  rememberMessageAuthor(msg.chat.id, msg.message_id, { userId: msg.from.id, username: virusNick, threadId: msg.message_thread_id });
   if (isMuted(msg.from.id)) {
     bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
     const row = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(msg.from.id);
@@ -1314,6 +1314,8 @@ setInterval(() => {
   if (text) bot.sendMessage(rows[0].chat_id, text).catch(() => {});
 }, 60 * 60 * 1000);
 
+const reactionRollsSeen = new Set(); // "reactorId:chatId:messageId", one roll per pair ever, capped at 1000
+
 bot.on('message_reaction', async (reaction) => {
   const reactorId = reaction.user?.id;
   if (!reactorId) return;
@@ -1327,6 +1329,11 @@ bot.on('message_reaction', async (reaction) => {
   const reactorRow = getVirusRow(reactorId);
   if (!reactorRow || reactorRow.immune) return;
 
+  const rollKey = `${reactorId}:${reaction.chat.id}:${reaction.message_id}`;
+  if (reactionRollsSeen.has(rollKey)) return;
+  reactionRollsSeen.add(rollKey);
+  if (reactionRollsSeen.size > 1000) reactionRollsSeen.delete(reactionRollsSeen.values().next().value);
+
   const stage = reactorRow.is_patient_zero ? 3 : reactorRow.stage;
   const chance = REACTION_INFECT_CHANCE[stage] || REACTION_INFECT_CHANCE[3];
   if (Math.random() >= chance) return;
@@ -1335,7 +1342,7 @@ bot.on('message_reaction', async (reaction) => {
   db.prepare(
     'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?)'
   ).run(author.userId, reaction.chat.id, author.username, reactorId, reactorNick);
-  bot.sendMessage(reaction.chat.id, `🦠 ${author.username} заразился(-ась) от ${reactorNick}!`).catch(() => {});
+  bot.sendMessage(reaction.chat.id, `🦠 ${author.username} заразился(-ась) от ${reactorNick}!`, author.threadId ? { message_thread_id: author.threadId } : {}).catch(() => {});
 });
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
