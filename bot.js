@@ -231,10 +231,13 @@ const SIDE_EFFECT_CHANCE = 0.20;
 const VIRUS_COUGH_EVERY = { 1: 7, 2: 5, 3: 3 };
 
 const VIRUS_PROCEDURES = {
-  ukol:   { bonus: 0.02, durationMs: 6 * 60 * 60 * 1000 },
-  klizma: { bonus: 0.03, durationMs: 2 * 24 * 60 * 60 * 1000 },
-  topor:  { bonus: 0.05, durationMs: 24 * 60 * 60 * 1000 },
+  ukol:    { bonus: 0.02, durationMs: 6 * 60 * 60 * 1000 },
+  klizma:  { bonus: 0.03, durationMs: 2 * 24 * 60 * 60 * 1000 },
+  topor:   { bonus: 0.05, durationMs: 24 * 60 * 60 * 1000 },
+  massage: { bonus: 0, durationMs: 4 * 60 * 60 * 1000 },
 };
+
+const VIRUS_PROCEDURE_ICONS = { ukol: '💉', klizma: '🚽', topor: '🪓', massage: '💆' };
 
 const VIRUS_STAGE1_PHRASE = '*кхе-кхе*';
 
@@ -945,6 +948,7 @@ function applyVirusProcedure(type) {
 bot.onText(/\/ukol\b/, applyVirusProcedure('ukol'));
 bot.onText(/\/klizma\b/, applyVirusProcedure('klizma'));
 bot.onText(/\/topor\b/, applyVirusProcedure('topor'));
+bot.onText(/\/massage\b/, applyVirusProcedure('massage'));
 
 function formatVirusList() {
   const rows = db.prepare('SELECT * FROM virus_infections WHERE immune = 0 ORDER BY is_patient_zero DESC, stage DESC').all();
@@ -953,7 +957,7 @@ function formatVirusList() {
   for (const row of rows) {
     const emoji = row.is_patient_zero ? '💀' : row.stage === 1 ? '🤧' : row.stage === 2 ? '🧟' : '🤢';
     const procs = getActiveVirusProcedureTypes(row.user_id);
-    const procText = procs.length ? ` (${procs.map(p => `💉 ${p}`).join(', ')})` : '';
+    const procText = procs.length ? ` (${procs.map(p => `${VIRUS_PROCEDURE_ICONS[p] || '💉'} ${p}`).join(', ')})` : '';
     lines.push(`${emoji} ${row.username}${procText}`);
   }
   const immuneRows = db.prepare('SELECT username FROM virus_infections WHERE immune = 1 ORDER BY created_at').all();
@@ -1131,14 +1135,17 @@ bot.on('message', async (msg) => {
 
       const every = VIRUS_COUGH_EVERY[virusRow.stage] || VIRUS_COUGH_EVERY[3];
       if (newCount % every === 0 && Math.random() < COUGH_CHANCE) {
-        virusCoughed = true;
-        virusModified = true;
+        const massaged = virusProcedureTypes.includes('massage');
+        if (!massaged) {
+          virusCoughed = true;
+          virusModified = true;
+        }
 
         let suffix;
         if (virusRow.stage === 1) suffix = VIRUS_STAGE1_PHRASE;
         else if (virusRow.stage === 3 && Math.random() < 0.05) suffix = `*${pick(VIRUS_STAGE3_EXTRAS)}*`;
         else suffix = pick(VIRUS_STAGE2_PHRASES);
-        virusText += `\n${suffix}`;
+        if (!massaged) virusText += `\n${suffix}`;
 
         let anyInfected = false;
         for (const entry of virusPriorRecent) {
@@ -1151,7 +1158,7 @@ bot.on('message', async (msg) => {
             bot.sendMessage(msg.chat.id, `🦠 ${entry.username} заразился(-ась) от ${virusNick}!`, threadOpts(msg)).catch(() => {});
           }
         }
-        virusText += `\n${anyInfected ? pick(VIRUS_COUGH_SPREAD_PHRASES) : pick(VIRUS_COUGH_CONTAINED_PHRASES)}`;
+        if (!massaged) virusText += `\n${anyInfected ? pick(VIRUS_COUGH_SPREAD_PHRASES) : pick(VIRUS_COUGH_CONTAINED_PHRASES)}`;
 
         if (!virusRow.is_patient_zero) {
           const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
