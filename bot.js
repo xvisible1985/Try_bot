@@ -1036,6 +1036,33 @@ bot.onText(/\/patient\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
 
+bot.onText(/\/immune\b/, async (msg) => {
+  const virusRow = getVirusRow(msg.from.id);
+  const nick = await getDisplayName(msg);
+  if (!virusRow || virusRow.immune) return bot.sendMessage(msg.chat.id, 'Ты не болен', threadOpts(msg));
+  if (virusRow.energy < 100) return bot.sendMessage(msg.chat.id, `Недостаточно энергии (${virusRow.energy}/100)`, threadOpts(msg));
+
+  db.prepare('UPDATE virus_infections SET energy = 0 WHERE user_id = ?').run(msg.from.id);
+
+  if (virusRow.is_patient_zero) {
+    return bot.sendMessage(msg.chat.id, `🦠 ${nick}: иммунная система бессильна против нулевого пациента`, threadOpts(msg));
+  }
+
+  if (Math.random() < 0.5) {
+    if (virusRow.stage <= 1) {
+      db.prepare('UPDATE virus_infections SET immune = 1 WHERE user_id = ?').run(msg.from.id);
+      db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(msg.from.id);
+      bot.sendMessage(msg.chat.id, `🛡️ ${nick}: иммунная система победила! Полное выздоровление, получен иммунитет!`, threadOpts(msg));
+    } else {
+      const newStage = virusRow.stage - 1;
+      db.prepare('UPDATE virus_infections SET stage = ? WHERE user_id = ?').run(newStage, msg.from.id);
+      bot.sendMessage(msg.chat.id, `🛡️ ${nick}: иммунная система откатила болезнь (стадия ${virusRow.stage}→${newStage})`, threadOpts(msg));
+    }
+  } else {
+    bot.sendMessage(msg.chat.id, `🦠 ${nick}: иммунная система не справилась, энергия потрачена впустую`, threadOpts(msg));
+  }
+});
+
 // --- List animals ---
 bot.onText(/\/animals/, (msg) => {
   const animalRows = db.prepare('SELECT username, animal, added_by_name FROM animals ORDER BY animal, created_at DESC').all();
