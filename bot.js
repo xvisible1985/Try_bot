@@ -225,7 +225,7 @@ const COMPLIMENTS = [
 const COUGH_CHANCE = 0.30;
 const INFECT_CHANCE = 0.25;
 const BASE_IMPROVE_CHANCE = 0.10;
-const WORSEN_CHANCE = 0.15;
+const WORSEN_CHANCE = 0.25;
 const SIDE_EFFECT_CHANCE = 0.20;
 
 const VIRUS_COUGH_EVERY = { 1: 7, 2: 5, 3: 3 };
@@ -554,11 +554,12 @@ function getVirusProcedureBonus(userId) {
 }
 
 function rollVirusStageChange(currentStage, improveChance, r = Math.random()) {
-  if (r < improveChance) {
-    if (currentStage <= 1) return { type: 'cured' };
+  const canImprove = currentStage > 1;
+  if (canImprove && r < improveChance) {
     return { type: 'improve', newStage: currentStage - 1 };
   }
-  if (r < improveChance + WORSEN_CHANCE) {
+  const worsenFloor = canImprove ? improveChance : 0;
+  if (r < worsenFloor + WORSEN_CHANCE) {
     return { type: 'worsen', newStage: Math.min(3, currentStage + 1) };
   }
   return { type: 'none' };
@@ -1143,11 +1144,7 @@ bot.on('message', async (msg) => {
         if (!virusRow.is_patient_zero) {
           const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
           const result = rollVirusStageChange(virusRow.stage, improveChance);
-          if (result.type === 'cured') {
-            db.prepare('UPDATE virus_infections SET immune = 1 WHERE user_id = ?').run(msg.from.id);
-            db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(msg.from.id);
-            bot.sendMessage(msg.chat.id, `✅ ${virusNick} полностью выздоровел и получил иммунитет!`, threadOpts(msg)).catch(() => {});
-          } else if (result.type === 'improve') {
+          if (result.type === 'improve') {
             db.prepare('UPDATE virus_infections SET stage = ?, message_count = 0 WHERE user_id = ?').run(result.newStage, msg.from.id);
             bot.sendMessage(msg.chat.id, `💊 ${virusNick} идёт на поправку (стадия ${virusRow.stage}→${result.newStage})`, threadOpts(msg)).catch(() => {});
           } else if (result.type === 'worsen') {
