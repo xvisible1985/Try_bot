@@ -185,6 +185,7 @@ db.exec(`
     message_count INTEGER DEFAULT 0,
     reached_stage2 INTEGER DEFAULT 0,
     energy INTEGER DEFAULT 0,
+    strain TEXT NOT NULL DEFAULT 'alpha',
     added_by INTEGER,
     added_by_name TEXT,
     created_at INTEGER DEFAULT (strftime('%s','now'))
@@ -192,6 +193,7 @@ db.exec(`
 `);
 try { db.exec('ALTER TABLE virus_infections ADD COLUMN reached_stage2 INTEGER DEFAULT 0'); } catch {};
 try { db.exec('ALTER TABLE virus_infections ADD COLUMN energy INTEGER DEFAULT 0'); } catch {};
+try { db.exec("ALTER TABLE virus_infections ADD COLUMN strain TEXT NOT NULL DEFAULT 'alpha'"); } catch {};
 db.exec(`
   CREATE TABLE IF NOT EXISTS virus_procedures (
     user_id INTEGER NOT NULL,
@@ -252,6 +254,16 @@ const VIRUS_STAGE2_PHRASES = [
 
 const VIRUS_STAGE3_EXTRAS = [
   'описался', 'пукнул', 'потерял сознание на секунду', 'обмочился',
+];
+
+const VIRUS_MUTATION_CHANCE = 0.15;
+const VIRUS_STRAIN_ICONS = { alpha: '🦠', beta: '👾' };
+const VIRUS_ZOMBIE_ICON = '🧟';
+
+const VIRUS_SEXZOMBIE_PHRASES = [
+  '*подмигнул всем присутствующим*', '*предложил встретиться после чата*',
+  '*начал флиртовать без разбора*', '*облизнулся и подмигнул*',
+  '*сделал комплимент фигуре собеседника*',
 ];
 
 const VIRUS_COUGH_CONTAINED_PHRASES = [
