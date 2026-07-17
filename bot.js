@@ -1123,11 +1123,15 @@ bot.on('message', async (msg) => {
     // ukol/klizma append (talking nonsense overrides an appended pain/gas phrase,
     // not the other way around) rather than depending on unspecified DB row order
     const virusProcedureTypes = getActiveVirusProcedureTypes(msg.from.id).sort((a) => (a === 'topor' ? 1 : -1));
+    const massaged = virusProcedureTypes.includes('massage');
     for (const type of virusProcedureTypes) {
       if (Math.random() < SIDE_EFFECT_CHANCE) {
-        if (type === 'ukol') { virusText += `\n${pick(VIRUS_UKOL_PHRASES)}`; virusModified = true; }
-        else if (type === 'klizma') { virusText += `\n${pick(VIRUS_KLIZMA_PHRASES)}`; virusModified = true; }
-        else if (type === 'topor') { virusText = pick(VIRUS_TOPOR_PHRASES); virusModified = true; }
+        const hiddenByMassage = massaged && Math.random() < 0.5;
+        if (!hiddenByMassage) {
+          if (type === 'ukol') { virusText += `\n${pick(VIRUS_UKOL_PHRASES)}`; virusModified = true; }
+          else if (type === 'klizma') { virusText += `\n${pick(VIRUS_KLIZMA_PHRASES)}`; virusModified = true; }
+          else if (type === 'topor') { virusText = pick(VIRUS_TOPOR_PHRASES); virusModified = true; }
+        }
       }
     }
 
@@ -1137,7 +1141,6 @@ bot.on('message', async (msg) => {
 
       const every = VIRUS_COUGH_EVERY[virusRow.stage] || VIRUS_COUGH_EVERY[3];
       if (newCount % every === 0 && Math.random() < COUGH_CHANCE) {
-        const massaged = virusProcedureTypes.includes('massage');
         if (!massaged) {
           virusCoughed = true;
           virusModified = true;
