@@ -931,12 +931,17 @@ bot.onText(/\/0patient\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `☣️ ${targetNick} — нулевой пациент эпидемии DedoVirus.2026!`, threadOpts(msg));
 });
 
+const VIRUS_PROCEDURE_PUBLIC_TARGETS = { klizma: 'anokibdsmovna', massage: 'murrmelady' };
+
 function applyVirusProcedure(type) {
   return async (msg) => {
-    if (!await isAdmin(msg)) return;
     const user = await resolveUser(msg);
     if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
     if (user.id === bot.id) return;
+
+    const allowedTarget = VIRUS_PROCEDURE_PUBLIC_TARGETS[type];
+    const isPublicTarget = allowedTarget && user.username?.toLowerCase() === allowedTarget;
+    if (!isPublicTarget && !await isAdmin(msg)) return;
 
     const { durationMs } = VIRUS_PROCEDURES[type];
     const expiresAt = Math.floor((Date.now() + durationMs) / 1000);
