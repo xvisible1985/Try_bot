@@ -1122,10 +1122,9 @@ bot.on('message', async (msg) => {
     const virusProcedureTypes = getActiveVirusProcedureTypes(msg.from.id).sort((a) => (a === 'topor' ? 1 : -1));
     for (const type of virusProcedureTypes) {
       if (Math.random() < SIDE_EFFECT_CHANCE) {
-        virusModified = true;
-        if (type === 'ukol') virusText += `\n${pick(VIRUS_UKOL_PHRASES)}`;
-        else if (type === 'klizma') virusText += `\n${pick(VIRUS_KLIZMA_PHRASES)}`;
-        else if (type === 'topor') virusText = pick(VIRUS_TOPOR_PHRASES);
+        if (type === 'ukol') { virusText += `\n${pick(VIRUS_UKOL_PHRASES)}`; virusModified = true; }
+        else if (type === 'klizma') { virusText += `\n${pick(VIRUS_KLIZMA_PHRASES)}`; virusModified = true; }
+        else if (type === 'topor') { virusText = pick(VIRUS_TOPOR_PHRASES); virusModified = true; }
       }
     }
 
