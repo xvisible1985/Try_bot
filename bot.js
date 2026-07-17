@@ -184,12 +184,14 @@ db.exec(`
     immune INTEGER DEFAULT 0,
     message_count INTEGER DEFAULT 0,
     reached_stage2 INTEGER DEFAULT 0,
+    energy INTEGER DEFAULT 0,
     added_by INTEGER,
     added_by_name TEXT,
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
 try { db.exec('ALTER TABLE virus_infections ADD COLUMN reached_stage2 INTEGER DEFAULT 0'); } catch {};
+try { db.exec('ALTER TABLE virus_infections ADD COLUMN energy INTEGER DEFAULT 0'); } catch {};
 db.exec(`
   CREATE TABLE IF NOT EXISTS virus_procedures (
     user_id INTEGER NOT NULL,
@@ -1144,7 +1146,11 @@ bot.on('message', async (msg) => {
 
     if (virusRow && !virusRow.immune) {
       const newCount = virusRow.message_count + 1;
-      db.prepare('UPDATE virus_infections SET message_count = ? WHERE user_id = ?').run(newCount, msg.from.id);
+      const newEnergy = Math.min(100, virusRow.energy + 1);
+      db.prepare('UPDATE virus_infections SET message_count = ?, energy = ? WHERE user_id = ?').run(newCount, newEnergy, msg.from.id);
+      if (newEnergy === 100 && virusRow.energy < 100) {
+        bot.sendMessage(msg.chat.id, `⚡ ${virusNick} накопил(а) 100 энергии — теперь можно попробовать /immune!`, threadOpts(msg)).catch(() => {});
+      }
 
       const every = VIRUS_COUGH_EVERY[virusRow.stage] || VIRUS_COUGH_EVERY[3];
       if (newCount % every === 0 && Math.random() < COUGH_CHANCE) {
