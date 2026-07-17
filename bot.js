@@ -1130,7 +1130,7 @@ bot.on('message', async (msg) => {
             db.prepare(
               'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?)'
             ).run(entry.userId, msg.chat.id, entry.username, msg.from.id, virusNick);
-            bot.sendMessage(msg.chat.id, `🦠 ${entry.username} заразился(-ась)!`, threadOpts(msg)).catch(() => {});
+            bot.sendMessage(msg.chat.id, `🦠 ${entry.username} заразился(-ась) от ${virusNick}!`, threadOpts(msg)).catch(() => {});
           }
         }
 
