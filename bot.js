@@ -1239,7 +1239,17 @@ bot.on('message', async (msg) => {
 
         let anyInfected = false;
         for (const entry of virusPriorRecent) {
-          if (getVirusRow(entry.userId)) continue;
+          const existingRow = getVirusRow(entry.userId);
+          if (existingRow) {
+            const canMutate = virusRow.strain === 'alpha' && virusRow.stage === 3 && existingRow.strain === 'alpha';
+            if (canMutate && Math.random() < VIRUS_MUTATION_CHANCE) {
+              db.prepare(
+                'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, strain, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?, ?)'
+              ).run(entry.userId, msg.chat.id, entry.username, 'beta', msg.from.id, virusNick);
+              bot.sendMessage(msg.chat.id, `🧬 ${entry.username} подхватил(а) МУТИРОВАВШИЙ штамм от ${virusNick}! Старый иммунитет к DedoVirus.2026 больше не защищает!`, threadOpts(msg)).catch(() => {});
+            }
+            continue;
+          }
           if (Math.random() < INFECT_CHANCE) {
             anyInfected = true;
             db.prepare(
