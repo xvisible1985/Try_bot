@@ -1007,6 +1007,7 @@ bot.onText(/\/cure\b/, async (msg) => {
   const row = getVirusRow(user.id);
   if (!row) return bot.sendMessage(msg.chat.id, `${user.username} не заражён`, threadOpts(msg));
   if (row.is_patient_zero) return bot.sendMessage(msg.chat.id, 'Нулевого пациента вылечить нельзя, используй /endvirus', threadOpts(msg));
+  if (row.strain === 'beta' && row.stage === 4) return bot.sendMessage(msg.chat.id, 'Секс-зомби вылечить нельзя, используй /endvirus', threadOpts(msg));
 
   db.prepare('UPDATE virus_infections SET immune = 1 WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(user.id);
@@ -1061,6 +1062,9 @@ bot.onText(/\/immune\b/, async (msg) => {
 
   if (virusRow.is_patient_zero) {
     return bot.sendMessage(msg.chat.id, `🦠 ${nick}: иммунная система бессильна против нулевого пациента`, threadOpts(msg));
+  }
+  if (virusRow.strain === 'beta' && virusRow.stage === 4) {
+    return bot.sendMessage(msg.chat.id, `🧟 ${nick}: иммунная система бессильна против секс-зомби`, threadOpts(msg));
   }
 
   if (Math.random() < 0.5) {
