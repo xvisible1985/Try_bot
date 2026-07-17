@@ -946,6 +946,12 @@ function formatVirusList() {
     const procText = procs.length ? ` (${procs.map(p => `💉 ${p}`).join(', ')})` : '';
     lines.push(`${emoji} ${row.username} — ${label}${procText}`);
   }
+  const immuneRows = db.prepare('SELECT username FROM virus_infections WHERE immune = 1 ORDER BY created_at').all();
+  lines.push('');
+  lines.push(`Всего переболело: ${rows.length + immuneRows.length}`);
+  if (immuneRows.length) {
+    lines.push(`✅ С иммунитетом (${immuneRows.length}): ${immuneRows.map(r => r.username).join(', ')}`);
+  }
   return lines.join('\n');
 }
 
