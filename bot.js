@@ -1123,6 +1123,8 @@ bot.on('message', async (msg) => {
     // ukol/klizma append (talking nonsense overrides an appended pain/gas phrase,
     // not the other way around) rather than depending on unspecified DB row order
     const virusProcedureTypes = getActiveVirusProcedureTypes(msg.from.id).sort((a) => (a === 'topor' ? 1 : -1));
+    // massage soothes what it treats fully (own cough symptoms, below) but only
+    // partially dulls other procedures' unrelated side effects (50% per roll)
     const massaged = virusProcedureTypes.includes('massage');
     for (const type of virusProcedureTypes) {
       if (Math.random() < SIDE_EFFECT_CHANCE) {
