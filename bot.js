@@ -969,9 +969,9 @@ bot.onText(/\/cure\b/, async (msg) => {
   if (!row) return bot.sendMessage(msg.chat.id, `${user.username} не заражён`, threadOpts(msg));
   if (row.is_patient_zero) return bot.sendMessage(msg.chat.id, 'Нулевого пациента вылечить нельзя, используй /endvirus', threadOpts(msg));
 
-  db.prepare('DELETE FROM virus_infections WHERE user_id = ?').run(user.id);
+  db.prepare('UPDATE virus_infections SET immune = 1 WHERE user_id = ?').run(user.id);
   db.prepare('DELETE FROM virus_procedures WHERE user_id = ?').run(user.id);
-  bot.sendMessage(msg.chat.id, `${user.username} вылечен от DedoVirus`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `${user.username} вылечен от DedoVirus и получил иммунитет`, threadOpts(msg));
 });
 
 bot.onText(/\/endvirus\b/, async (msg) => {
