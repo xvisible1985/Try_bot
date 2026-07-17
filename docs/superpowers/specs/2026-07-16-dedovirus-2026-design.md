@@ -212,6 +212,59 @@ condition, replacing the reached-stage-2 requirement for this specific
 path). Failure at any stage → `иммунная система не справилась, энергия
 потрачена впустую`, no stage change.
 
+## Addendum: strain mutation and the sex-zombie terminal stage
+
+A second strain, "beta" (the mutated strain), can emerge from the existing
+"alpha" strain (everything built so far implicitly is alpha). Exactly two
+strains exist — beta never mutates further.
+
+**Mutation trigger:** during the existing cough-spread infection loop, for
+each of the (up to 3) `virusPriorRecent` candidates, the existing code
+already does `if (getVirusRow(entry.userId)) continue;` — skipping anyone
+who already has a row (currently sick with alpha, or immune to alpha).
+Mutation adds a check inside that skip path: if the coughing user is
+`strain='alpha'` AND `stage=3`, AND the candidate's existing row is also
+`strain='alpha'`, roll `VIRUS_MUTATION_CHANCE` (15%). On success, the
+candidate's row is fully overwritten — `INSERT OR REPLACE` — with a fresh
+`strain='beta', stage=1` infection, discarding whatever alpha state they had
+(active infection or immunity). This is the literal mechanic behind "the
+mutated strain isn't susceptible to old-virus immunity" — it doesn't check
+or care about the target's alpha status at all, it just replaces it.
+Announced distinctly from a normal infection: `🧬 {ник} подхватил(а)
+МУТИРОВАВШИЙ штамм от {источник}! Старый иммунитет к DedoVirus.2026 больше
+не защищает!`. This mutation path only exists in the cough-spread loop, not
+the reaction-spread handler.
+
+**Beta strain progression:** stages 1-3 behave exactly like alpha (same
+`VIRUS_STAGE1_PHRASE`/`VIRUS_STAGE2_PHRASES`/`VIRUS_STAGE3_EXTRAS` cough
+text, same cadence, same improve/worsen roll shape) — per explicit user
+decision, symptoms are visually identical between strains; `strain` is
+purely a backend/immunity-bypass distinction, not a new flavor-text set for
+stages 1-3. The one difference: beta's worsen roll can push stage 3 → 4,
+where alpha is hard-capped at 3. This requires `rollVirusStageChange` to
+accept a `maxStage` parameter (3 for alpha, 4 for beta) instead of a
+hardcoded cap.
+
+**Stage 4 = "sex-zombie," a terminal status:** reaching stage 4 is
+permanent — announced once (`🧟 {ник} превратился(-ась) в секс-зомби! Стал(а)
+молодым(ой), дерзким(ой) и пристаёт ко всем подряд!`), and from that point
+the user is EXCLUDED from all future stage-change rolls entirely (same
+exclusion mechanism already used for patient zero) — no improve, no worsen,
+no `/cure`, no `/immune` effect. Only `/endvirus` (the full epidemic wipe)
+can remove it. On every subsequent cough (same cadence as before), instead
+of a stage-appropriate phrase, one of `VIRUS_SEXZOMBIE_PHRASES` is appended
+— mild flirtatious/innuendo text only (winking, propositioning, compliments
+on someone's figure), explicitly NOT explicit sexual-act descriptions —
+that boundary was intentionally drawn during design and must be preserved
+if this list is ever extended.
+
+**Display:** `formatVirusList()`'s per-stage emoji scheme changes from one
+fixed emoji per stage number to a strain-colored emoji repeated `stage`
+times — `🦠` × stage for alpha, `👾` × stage for beta — except patient zero
+(still `💀`, unchanged) and stage-4 sex-zombies (`🧟`, not repeated). The
+immune list also gains a per-person strain icon (`🦠` or `👾`) so it's clear
+which strain someone's immunity is from.
+
 ## Addendum: reaction-based infection
 
 A second infection vector, added after the initial build: a currently-infected
