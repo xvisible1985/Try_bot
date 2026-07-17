@@ -977,16 +977,19 @@ function formatVirusList() {
   if (!rows.length) return null;
   const lines = ['☣️ DedoVirus.2026'];
   for (const row of rows) {
-    const emoji = row.is_patient_zero ? '💀' : row.stage === 1 ? '🤧' : row.stage === 2 ? '🧟' : '🤢';
+    let emoji;
+    if (row.is_patient_zero) emoji = '💀';
+    else if (row.strain === 'beta' && row.stage === 4) emoji = VIRUS_ZOMBIE_ICON;
+    else emoji = (VIRUS_STRAIN_ICONS[row.strain] || '🦠').repeat(row.stage);
     const procs = getActiveVirusProcedureTypes(row.user_id);
     const procText = procs.length ? ` (${procs.map(p => `${VIRUS_PROCEDURE_ICONS[p] || '💉'} ${p}`).join(', ')})` : '';
     lines.push(`${emoji} ${row.username}${procText}`);
   }
-  const immuneRows = db.prepare('SELECT username FROM virus_infections WHERE immune = 1 ORDER BY created_at').all();
+  const immuneRows = db.prepare('SELECT username, strain FROM virus_infections WHERE immune = 1 ORDER BY created_at').all();
   lines.push('');
   lines.push(`Всего переболело: ${rows.length + immuneRows.length}`);
   if (immuneRows.length) {
-    lines.push(`✅ С иммунитетом (${immuneRows.length}): ${immuneRows.map(r => r.username).join(', ')}`);
+    lines.push(`✅ С иммунитетом (${immuneRows.length}): ${immuneRows.map(r => `${VIRUS_STRAIN_ICONS[r.strain] || '🦠'} ${r.username}`).join(', ')}`);
   }
   return lines.join('\n');
 }
