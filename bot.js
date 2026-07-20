@@ -1220,6 +1220,7 @@ bot.on('message', async (msg) => {
   // --- DedoVirus.2026: cough / infection / stage change / procedure side effects ---
   if (msg.text && !msg.text.startsWith('/') && !msg.text.startsWith('**')) {
     const virusRow = getVirusRow(msg.from.id);
+    const quarantineActive = isQuarantineActive();
     let virusText = msg.text;
     let virusModified = false;
     let virusCoughed = false;
@@ -1270,7 +1271,7 @@ bot.on('message', async (msg) => {
           const existingRow = getVirusRow(entry.userId);
           if (existingRow) {
             const canMutate = entry.userId !== msg.from.id && virusRow.strain === 'alpha' && virusRow.stage === 3 && existingRow.strain === 'alpha';
-            if (canMutate && Math.random() < VIRUS_MUTATION_CHANCE) {
+            if (canMutate && Math.random() < VIRUS_MUTATION_CHANCE * (quarantineActive ? VIRUS_QUARANTINE_RISK_MULTIPLIER : 1)) {
               db.prepare(
                 'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, strain, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?, ?)'
               ).run(entry.userId, msg.chat.id, entry.username, 'beta', msg.from.id, virusNick);
@@ -1278,7 +1279,7 @@ bot.on('message', async (msg) => {
             }
             continue;
           }
-          if (Math.random() < INFECT_CHANCE) {
+          if (Math.random() < INFECT_CHANCE * (quarantineActive ? VIRUS_QUARANTINE_RISK_MULTIPLIER : 1)) {
             anyInfected = true;
             db.prepare(
               'INSERT OR REPLACE INTO virus_infections (user_id, chat_id, username, stage, is_patient_zero, immune, message_count, added_by, added_by_name) VALUES (?, ?, ?, 1, 0, 0, 0, ?, ?)'
@@ -1289,7 +1290,7 @@ bot.on('message', async (msg) => {
         if (!massaged) virusText += `\n${anyInfected ? pick(VIRUS_COUGH_SPREAD_PHRASES) : pick(VIRUS_COUGH_CONTAINED_PHRASES)}`;
 
         if (!virusRow.is_patient_zero && !isZombie) {
-          const improveChance = BASE_IMPROVE_CHANCE + getVirusProcedureBonus(msg.from.id);
+          const improveChance = BASE_IMPROVE_CHANCE * (quarantineActive ? VIRUS_QUARANTINE_IMPROVE_MULTIPLIER : 1) + getVirusProcedureBonus(msg.from.id);
           const maxStage = virusRow.strain === 'beta' ? 4 : 3;
           const result = rollVirusStageChange(virusRow.stage, improveChance, !!virusRow.reached_stage2, maxStage);
           if (result.type === 'cured') {
