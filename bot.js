@@ -1425,6 +1425,7 @@ bot.onText(/\/help\b/, (msg) => {
     '/patient — своя карточка больного (админ ответом — карточка любого)',
     '/immune — попытка самоизлечения при 100 энергии (50/50)',
     '/ukol /klizma /topor /massage — процедуры (ответ на сообщение, админ)',
+    '/quarantine — карантин на 24ч: риск заражения ×0.4, шанс выздоровления ×2 (админ)',
   ].join('\n');
   bot.sendMessage(msg.chat.id, text, threadOpts(msg));
 });
@@ -1503,7 +1504,8 @@ bot.on('message_reaction', async (reaction) => {
   if (reactionRollsSeen.size > 1000) reactionRollsSeen.delete(reactionRollsSeen.values().next().value);
 
   const stage = reactorRow.is_patient_zero ? 3 : reactorRow.stage;
-  const chance = REACTION_INFECT_CHANCE[stage] || REACTION_INFECT_CHANCE[3];
+  const baseChance = REACTION_INFECT_CHANCE[stage] || REACTION_INFECT_CHANCE[3];
+  const chance = baseChance * (isQuarantineActive() ? VIRUS_QUARANTINE_RISK_MULTIPLIER : 1);
   if (Math.random() >= chance) return;
 
   const reactorNick = reaction.user.username ? `@${reaction.user.username}` : reaction.user.first_name;
