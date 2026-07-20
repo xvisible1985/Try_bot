@@ -202,6 +202,12 @@ db.exec(`
     PRIMARY KEY (user_id, procedure_type)
   )
 `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS virus_quarantine (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    expires_at INTEGER NOT NULL
+  )
+`);
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -285,6 +291,9 @@ const VIRUS_TOPOR_PHRASES = [
 ];
 
 const REACTION_INFECT_CHANCE = { 1: 0.01, 2: 0.03, 3: 0.05 };
+const VIRUS_QUARANTINE_DURATION_MS = 24 * 60 * 60 * 1000;
+const VIRUS_QUARANTINE_RISK_MULTIPLIER = 0.4;
+const VIRUS_QUARANTINE_IMPROVE_MULTIPLIER = 2;
 
 // Dahlʼs dictionary meanings for common swear roots
 const DAHL = {
@@ -566,6 +575,11 @@ async function isAdmin(msg) {
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function isQuarantineActive() {
+  const row = db.prepare('SELECT expires_at FROM virus_quarantine WHERE id = 1').get();
+  return !!row && row.expires_at * 1000 > Date.now();
 }
 
 function getVirusRow(userId) {
@@ -1080,6 +1094,13 @@ bot.onText(/\/immune\b/, async (msg) => {
   } else {
     bot.sendMessage(msg.chat.id, `🦠 ${nick}: иммунная система не справилась, энергия потрачена впустую`, threadOpts(msg));
   }
+});
+
+bot.onText(/\/quarantine\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const expiresAt = Math.floor((Date.now() + VIRUS_QUARANTINE_DURATION_MS) / 1000);
+  db.prepare('INSERT OR REPLACE INTO virus_quarantine (id, expires_at) VALUES (1, ?)').run(expiresAt);
+  bot.sendMessage(msg.chat.id, '🏥 Объявлен карантин на 24 часа! Заразиться сложнее, вылечиться — легче.', threadOpts(msg));
 });
 
 // --- List animals ---
