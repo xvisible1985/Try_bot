@@ -265,6 +265,24 @@ times — `🦠` × stage for alpha, `👾` × stage for beta — except patient
 immune list also gains a per-person strain icon (`🦠` or `👾`) so it's clear
 which strain someone's immunity is from.
 
+## Addendum: `/quarantine` — a temporary, chat-wide risk/recovery modifier
+
+An admin-only, global (not per-person) toggle meant to help wind an epidemic
+down: `/quarantine` sets a 24-hour window during which every infection-risk
+roll in the feature is multiplied by 0.4 (60% less likely) and every
+recovery-chance roll is multiplied by 2 (twice as likely). Re-running the
+command while already active simply overwrites the expiry with a fresh
+24 hours from now (`INSERT OR REPLACE` on a single-row table), not additive
+stacking. It affects: cough-spread `INFECT_CHANCE`, the mutation roll
+(`VIRUS_MUTATION_CHANCE`), reaction-spread `REACTION_INFECT_CHANCE`, and the
+stage-improve roll's `BASE_IMPROVE_CHANCE` (the multiplier applies to the
+base rate only, before per-procedure bonuses are added — procedures keep
+their existing flat bonuses on top). State is a single-row table
+(`virus_quarantine`, `id` fixed at 1, `expires_at`) rather than an in-memory
+flag, so it survives bot restarts — consistent with every other
+time-bounded state in this feature (mutes, fishers, procedures) already
+being DB-backed rather than in-memory.
+
 ## Addendum: reaction-based infection
 
 A second infection vector, added after the initial build: a currently-infected
