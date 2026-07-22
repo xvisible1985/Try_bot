@@ -1476,13 +1476,6 @@ bot.onText(/\/msg\s+"([^"]+)"\s+"([^"]*)"/, async (msg, match) => {
   });
 });
 
-setInterval(() => {
-  const rows = db.prepare('SELECT chat_id FROM virus_infections WHERE immune = 0 LIMIT 1').all();
-  if (!rows.length) return;
-  const text = formatVirusList();
-  if (text) bot.sendMessage(rows[0].chat_id, text).catch(() => {});
-}, 60 * 60 * 1000);
-
 const reactionRollsSeen = new Set(); // "reactorId:chatId:messageId", one roll per pair ever, capped at 1000
 
 bot.on('message_reaction', async (reaction) => {
