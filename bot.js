@@ -71,6 +71,11 @@ async function recognizeSticker(fileId) {
 
 // --- SQLite ---
 const db = new Database('mutes.db');
+// troll-bot (separate process, sibling repo) writes to this same file to
+// mark users as "smelling of troll pee" — busy_timeout so a rare write
+// collision between the two processes retries instead of throwing
+// SQLITE_BUSY immediately.
+db.pragma('busy_timeout = 5000');
 db.exec(`
   CREATE TABLE IF NOT EXISTS mutes (
     user_id INTEGER PRIMARY KEY,
@@ -80,6 +85,14 @@ db.exec(`
     muted_by_name TEXT,
     expires_at INTEGER,
     created_at INTEGER DEFAULT (strftime('%s','now'))
+  )
+`);
+// Written by troll-bot (see its pee/poop-game mechanics), read here.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS troll_smell (
+    user_id INTEGER PRIMARY KEY,
+    marked_at INTEGER DEFAULT (strftime('%s','now')),
+    expires_at INTEGER NOT NULL
   )
 `);
 db.exec(`
@@ -1142,6 +1155,18 @@ bot.on('message', async (msg) => {
     bot.sendMessage(msg.chat.id, `${msg.from.first_name}, вы замучены ${until}`, threadOpts(msg)).catch(() => {});
     return;
   }
+
+  // Marked by troll-bot's pee/poop-game mechanics — every message for the
+  // duration gets called out, on purpose (that's the joke).
+  const smellRow = db.prepare('SELECT expires_at FROM troll_smell WHERE user_id = ?').get(msg.from.id);
+  if (smellRow) {
+    if (smellRow.expires_at * 1000 < Date.now()) {
+      db.prepare('DELETE FROM troll_smell WHERE user_id = ?').run(msg.from.id);
+    } else {
+      bot.sendMessage(msg.chat.id, `💦 от ${msg.from.first_name} несёт мочой тролля...`, threadOpts(msg)).catch(() => {});
+    }
+  }
+
   // Auto-fisher trigger
   if (msg.text && /рыбалк/i.test(msg.text)) {
     const now = Date.now();
