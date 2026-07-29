@@ -1140,6 +1140,13 @@ bot.onText(/\/animals/, (msg) => {
 // --- Auto-fisher: 2+ "рыбалка" within 15s ---
 const fishingTracker = new Map();
 
+// Counts messages per marked user while troll_smell has them — the callout
+// fires every 3rd message instead of every single one now. In-memory only
+// (like fishingTracker above): a restart just resets the count, no need to
+// persist it. Not reset when marked_at is refreshed by a new poop-game loss
+// — it just keeps counting continuously for as long as the user is marked.
+const smellMessageCounts = new Map();
+
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
@@ -1162,8 +1169,13 @@ bot.on('message', async (msg) => {
   if (smellRow) {
     if (smellRow.expires_at * 1000 < Date.now()) {
       db.prepare('DELETE FROM troll_smell WHERE user_id = ?').run(msg.from.id);
+      smellMessageCounts.delete(msg.from.id);
     } else {
-      bot.sendMessage(msg.chat.id, `💦 от ${msg.from.first_name} несёт мочой тролля...`, threadOpts(msg)).catch(() => {});
+      const smellCount = (smellMessageCounts.get(msg.from.id) || 0) + 1;
+      smellMessageCounts.set(msg.from.id, smellCount);
+      if (smellCount % 3 === 0) {
+        bot.sendMessage(msg.chat.id, `💦 от ${msg.from.first_name} несёт мочой тролля...`, threadOpts(msg)).catch(() => {});
+      }
     }
   }
 
