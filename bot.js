@@ -95,6 +95,11 @@ db.exec(`
     expires_at INTEGER NOT NULL
   )
 `);
+// 'poop' (the poop-trap loser, played as an ironic "smells of violets" line)
+// vs 'pee' (plain "smells of troll pee") — see the reply logic below.
+try {
+  db.exec("ALTER TABLE troll_smell ADD COLUMN reason TEXT NOT NULL DEFAULT 'pee'");
+} catch {}
 db.exec(`
   CREATE TABLE IF NOT EXISTS pigs (
     user_id INTEGER PRIMARY KEY,
@@ -1165,7 +1170,7 @@ bot.on('message', async (msg) => {
 
   // Marked by troll-bot's pee/poop-game mechanics — every message for the
   // duration gets called out, on purpose (that's the joke).
-  const smellRow = db.prepare('SELECT expires_at FROM troll_smell WHERE user_id = ?').get(msg.from.id);
+  const smellRow = db.prepare('SELECT expires_at, reason FROM troll_smell WHERE user_id = ?').get(msg.from.id);
   if (smellRow) {
     if (smellRow.expires_at * 1000 < Date.now()) {
       db.prepare('DELETE FROM troll_smell WHERE user_id = ?').run(msg.from.id);
@@ -1174,7 +1179,10 @@ bot.on('message', async (msg) => {
       const smellCount = (smellMessageCounts.get(msg.from.id) || 0) + 1;
       smellMessageCounts.set(msg.from.id, smellCount);
       if (smellCount % 3 === 0) {
-        bot.sendMessage(msg.chat.id, `💦 от ${msg.from.first_name} несёт мочой тролля...`, threadOpts(msg)).catch(() => {});
+        const smellText = smellRow.reason === 'poop'
+          ? `🌸 от ${msg.from.first_name} пахнет фиалками, точно так же как пахнет говно тролля...`
+          : `💦 от ${msg.from.first_name} несёт мочой тролля...`;
+        bot.sendMessage(msg.chat.id, smellText, threadOpts(msg)).catch(() => {});
       }
     }
   }
