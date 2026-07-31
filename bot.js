@@ -739,6 +739,147 @@ bot.onText(/\/mutes/, (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg));
 });
 
+// --- PvP: /me and /kick ---
+// Same health/injury system "Драка" (troll-bot's fight game) already reads
+// and writes here — this just adds a human-vs-human move on top, live
+// locally instead of through troll-bot's cross-process connection, since
+// this bot already owns user_health/injuries/mutes directly.
+const PVP_WEAPONS = ['палкой', 'сковородкой', 'веткой', 'ботинком', 'подушкой', 'зонтиком', 'веслом', 'шваброй', 'рыбой', 'кулаком'];
+const PVP_BODY_PARTS = ['по голове', 'по спине', 'по ноге', 'по руке', 'по животу', 'по попе', 'по лбу', 'в бок'];
+const PVP_INJURY_REFUSAL_TEXT = {
+  arm: 'твоя рука ещё болит, не до драки!',
+  leg: 'твоя нога ещё болит, не до драки!',
+  head: 'твоя голова ещё болит, не до драки!',
+};
+
+function getUserInjury(userId) {
+  const row = db.prepare('SELECT injury_type, injured_until FROM injuries WHERE user_id = ?').get(userId);
+  if (!row) return null;
+  if (row.injured_until * 1000 < Date.now()) {
+    db.prepare('DELETE FROM injuries WHERE user_id = ?').run(userId);
+    return null;
+  }
+  return row.injury_type;
+}
+
+function applyInjury(userId, injuryType) {
+  const injuredUntil = Math.floor(Date.now() / 1000) + 24 * 3600;
+  db.prepare(
+    'INSERT INTO injuries (user_id, injury_type, injured_until) VALUES (?, ?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET injury_type = excluded.injury_type, injured_until = excluded.injured_until'
+  ).run(userId, injuryType, injuredUntil);
+}
+
+// Lazily creates a 100/100 row on first access, same as troll-bot's own
+// copy of this helper.
+function getUserHealth(userId) {
+  db.prepare('INSERT OR IGNORE INTO user_health (user_id, health, max_health) VALUES (?, 100, 100)').run(userId);
+  return db.prepare('SELECT health, max_health FROM user_health WHERE user_id = ?').get(userId);
+}
+
+// UPDATE...RETURNING keeps the floor-then-read atomic against the regen
+// tick's own concurrent writes (see healthRegenTick below).
+function damageHuman(userId, chatId, username, damage) {
+  getUserHealth(userId);
+  const row = db.prepare('UPDATE user_health SET health = MAX(0, health - ?) WHERE user_id = ? RETURNING health').get(damage, userId);
+  if (row.health === 0) {
+    muteUser(userId, chatId, username, 0, 'драка', 30 * 60 * 1000);
+  }
+  return row.health;
+}
+
+// In-memory per-user cooldown — a rate limiter doesn't need to survive a
+// restart, same idiom as troll-bot's own commandCooldowns.
+const pvpCooldowns = new Map();
+const PVP_COOLDOWN_MS = 60 * 1000;
+function checkPvpCooldown(userId) {
+  const last = pvpCooldowns.get(userId);
+  if (last && Date.now() - last < PVP_COOLDOWN_MS) return false;
+  pvpCooldowns.set(userId, Date.now());
+  return true;
+}
+
+bot.onText(/\/me\b/, (msg) => {
+  const health = getUserHealth(msg.from.id);
+  bot.sendMessage(msg.chat.id, `❤️ Твоё здоровье: ${health.health}/${health.max_health}`, threadOpts(msg)).catch(() => {});
+});
+
+// Target resolution: reply-to-message first, else a best-effort
+// bot.getChat('@handle') — this bot has no relationships table to look
+// usernames up against locally, unlike troll-bot's "Тролль Фас".
+bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  let target = null;
+  if (msg.reply_to_message && msg.reply_to_message.from) {
+    target = {
+      id: msg.reply_to_message.from.id,
+      username: msg.reply_to_message.from.username,
+      firstName: msg.reply_to_message.from.first_name,
+    };
+  } else if (match[1]) {
+    const handle = match[1].replace(/^@/, '');
+    try {
+      const chat = await bot.getChat('@' + handle);
+      target = { id: chat.id, username: chat.username, firstName: chat.first_name };
+    } catch {}
+  }
+
+  if (!target) {
+    bot.sendMessage(msg.chat.id, 'Укажи @юзернейм или ответь на сообщение того, кого хочешь ударить.', threadOpts(msg)).catch(() => {});
+    return;
+  }
+  if (target.id === msg.from.id) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя ударить самого себя!`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  const injury = getUserInjury(msg.from.id);
+  if (injury) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, ${PVP_INJURY_REFUSAL_TEXT[injury]}`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const attackerHealth = getUserHealth(msg.from.id);
+  if (attackerHealth.health === 0) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  if (!checkPvpCooldown(msg.from.id)) return;
+
+  const targetLabel = target.username ? `@${target.username}` : target.firstName;
+  const weapon = pick(PVP_WEAPONS);
+  const bodyPart = pick(PVP_BODY_PARTS);
+  const roll = Math.floor(Math.random() * 101);
+  const success = roll >= 50;
+  const outcome = success ? '✅ удачно' : '❌ неудачно';
+  await bot.sendMessage(
+    msg.chat.id,
+    `${actorLabel} — ударить ${targetLabel} ${weapon} ${bodyPart} ${outcome}: ${roll}/100`,
+    threadOpts(msg)
+  ).catch(() => {});
+  if (!success) return;
+
+  const targetHealthBefore = getUserHealth(target.id);
+  const dmg = Math.floor(Math.random() * 20) + 1;
+  const targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
+  await bot.sendMessage(
+    msg.chat.id,
+    `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
+    threadOpts(msg)
+  ).catch(() => {});
+
+  if (roll >= 90) {
+    const injuryType = pick(['arm', 'leg', 'head']);
+    applyInjury(target.id, injuryType);
+    const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
+    await bot.sendMessage(
+      msg.chat.id,
+      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на сутки).`,
+      threadOpts(msg)
+    ).catch(() => {});
+  }
+});
+
 // --- Animal assign/unassign (admin only, reply required) ---
 for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
   bot.onText(new RegExp(`^\\/${animalType}\\b`, 'i'), async (msg) => {
@@ -1545,6 +1686,10 @@ bot.onText(/\/help\b/, (msg) => {
     '/try [текст] — попытка (0–100)',
     '/dice [максимум] — кубик',
     '** [текст] — действие от третьего лица',
+    '',
+    'PvP:',
+    '/me — твоё здоровье',
+    '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на сутки, 0 здоровья — мут на 30 мин)',
     '',
     'DedoVirus.2026 (эпидемия):',
     '/0patient — назначить нулевого пациента (ответ на сообщение, админ)',
