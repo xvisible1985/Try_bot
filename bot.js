@@ -1639,4 +1639,37 @@ bot.on('message_reaction', async (reaction) => {
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
 bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'текст:', msg.text));
+// Health regen — this bot's first background timer (no existing setInterval
+// to mirror; troll-bot's own backgroundTick is the loose stylistic
+// reference: one self-contained function, called on a fixed interval).
+// Runs every 10 minutes: (1) hourly +10 trickle, prorated by elapsed time
+// and capped at max_health, for anyone below it; (2) once daily at 04:00
+// server time, a full restore to max_health for everyone, guarded by
+// health_regen_state.last_full_restore_date so it only fires once per
+// calendar day rather than on every tick during the 04:00 hour.
+const HEALTH_REGEN_PER_HOUR = 10;
+const HEALTH_REGEN_TICK_MS = 10 * 60 * 1000;
+
+function healthRegenTick() {
+  const now = Math.floor(Date.now() / 1000);
+
+  const rows = db.prepare('SELECT user_id, health, max_health, last_regen_at FROM user_health WHERE health < max_health').all();
+  for (const row of rows) {
+    const elapsedSeconds = row.last_regen_at ? now - row.last_regen_at : 3600;
+    const gain = Math.floor((elapsedSeconds / 3600) * HEALTH_REGEN_PER_HOUR);
+    if (gain > 0) {
+      db.prepare('UPDATE user_health SET health = MIN(max_health, health + ?), last_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
+    }
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const regenState = db.prepare('SELECT last_full_restore_date FROM health_regen_state WHERE id = 1').get();
+  const hour = new Date().getHours();
+  if (hour === 4 && regenState.last_full_restore_date !== today) {
+    db.prepare('UPDATE user_health SET health = max_health, last_regen_at = ? WHERE health < max_health').run(now);
+    db.prepare('UPDATE health_regen_state SET last_full_restore_date = ? WHERE id = 1').run(today);
+  }
+}
+setInterval(healthRegenTick, HEALTH_REGEN_TICK_MS);
+
 console.log('Бот запущен...');
