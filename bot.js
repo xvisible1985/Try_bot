@@ -1198,7 +1198,14 @@ bot.on('message', async (msg) => {
   rememberMessageAuthor(msg.chat.id, msg.message_id, { userId: msg.from.id, username: virusNick, threadId: msg.message_thread_id });
   if (isMuted(msg.from.id)) {
     bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
-    const row = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(msg.from.id);
+    const row = db.prepare('SELECT expires_at, muted_by_name FROM mutes WHERE user_id = ?').get(msg.from.id);
+    // Knocked out by "Драка" (0 health) gets its own flavor line instead of
+    // the normal admin-mute message — same underlying mute mechanism either
+    // way, see muteUser/isMuted above.
+    if (row && row.muted_by_name === 'драка') {
+      bot.sendMessage(msg.chat.id, `😵 ${msg.from.first_name} находится в отключке...`, threadOpts(msg)).catch(() => {});
+      return;
+    }
     const until = row ? formatExpire(row.expires_at) : '';
     bot.sendMessage(msg.chat.id, `${msg.from.first_name}, вы замучены ${until}`, threadOpts(msg)).catch(() => {});
     return;
