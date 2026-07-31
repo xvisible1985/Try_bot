@@ -1188,6 +1188,27 @@ const fishingTracker = new Map();
 // — it just keeps counting continuously for as long as the user is marked.
 const smellMessageCounts = new Map();
 
+// Leg-injury "хромает" throttle (see troll-bot's "Драка" game, which writes
+// to the injuries table) — identical in-memory-counter shape to
+// smellMessageCounts above: every 3rd message while the leg injury is
+// active gets the limp line, reset when the injury clears.
+const limpMessageCounts = new Map();
+
+// Head-injury nonsense replies — flat per-message chance (see the injuries
+// check below), not a counter like leg's, since "sometimes talks nonsense"
+// reads as a dice roll rather than a fixed cadence.
+const HEAD_INJURY_CHANCE = 0.25;
+const HEAD_INJURY_PHRASES = [
+  'Ты вообще о чём?',
+  'Моя видеть единорога, извини, что?',
+  'Погоди, а где мои носки?',
+  'Кажется, только что была вспышка света... или нет?',
+  'Стоп, а мы вообще о чём говорили?',
+  'Ой, голова кружится... что твоя сказать?',
+  'Мимо. Полностью мимо.',
+  'Твоя такое говорить, а моя видеть только звёздочки.',
+];
+
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
@@ -1227,6 +1248,26 @@ bot.on('message', async (msg) => {
           : `💦 от ${msg.from.first_name} несёт мочой тролля...`;
         bot.sendMessage(msg.chat.id, smellText, threadOpts(msg)).catch(() => {});
       }
+    }
+  }
+
+  // Injury passive effects (see troll-bot's "Драка" game, which writes to
+  // the injuries table on a critical hit) — lazily expired here the same
+  // way troll_smell/mutes already are, not a separate cleanup job.
+  const injuryRow = db.prepare('SELECT injury_type, injured_until FROM injuries WHERE user_id = ?').get(msg.from.id);
+  if (injuryRow) {
+    if (injuryRow.injured_until * 1000 < Date.now()) {
+      db.prepare('DELETE FROM injuries WHERE user_id = ?').run(msg.from.id);
+      limpMessageCounts.delete(msg.from.id);
+    } else if (injuryRow.injury_type === 'leg') {
+      const limpCount = (limpMessageCounts.get(msg.from.id) || 0) + 1;
+      limpMessageCounts.set(msg.from.id, limpCount);
+      if (limpCount % 3 === 0) {
+        bot.sendMessage(msg.chat.id, `🦵 ${msg.from.first_name} хромает...`, threadOpts(msg)).catch(() => {});
+      }
+    } else if (injuryRow.injury_type === 'head' && Math.random() < HEAD_INJURY_CHANCE) {
+      const nonsense = HEAD_INJURY_PHRASES[Math.floor(Math.random() * HEAD_INJURY_PHRASES.length)];
+      bot.sendMessage(msg.chat.id, nonsense, { reply_to_message_id: msg.message_id, ...threadOpts(msg) }).catch(() => {});
     }
   }
 
