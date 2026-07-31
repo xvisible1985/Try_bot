@@ -789,14 +789,17 @@ function damageHuman(userId, chatId, username, damage) {
 }
 
 // In-memory per-user cooldown — a rate limiter doesn't need to survive a
-// restart, same idiom as troll-bot's own commandCooldowns.
+// restart, same idiom as troll-bot's own commandCooldowns. Unlike that one
+// (which drops repeats silently), /kick's cooldown is meant to be visible —
+// returns seconds remaining (0 means allowed, and stamps the attempt).
 const pvpCooldowns = new Map();
 const PVP_COOLDOWN_MS = 60 * 1000;
 function checkPvpCooldown(userId) {
   const last = pvpCooldowns.get(userId);
-  if (last && Date.now() - last < PVP_COOLDOWN_MS) return false;
+  const elapsed = last ? Date.now() - last : Infinity;
+  if (elapsed < PVP_COOLDOWN_MS) return Math.ceil((PVP_COOLDOWN_MS - elapsed) / 1000);
   pvpCooldowns.set(userId, Date.now());
-  return true;
+  return 0;
 }
 
 bot.onText(/\/me\b/, (msg) => {
@@ -844,7 +847,15 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msg)).catch(() => {});
     return;
   }
-  if (!checkPvpCooldown(msg.from.id)) return;
+  const cooldownRemaining = checkPvpCooldown(msg.from.id);
+  if (cooldownRemaining > 0) {
+    bot.sendMessage(
+      msg.chat.id,
+      `${actorLabel}, нельзя бить так часто — подожди ещё ${cooldownRemaining} сек.`,
+      threadOpts(msg)
+    ).catch(() => {});
+    return;
+  }
 
   const targetLabel = target.username ? `@${target.username}` : target.firstName;
   const weapon = pick(PVP_WEAPONS);
