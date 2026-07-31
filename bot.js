@@ -1651,23 +1651,27 @@ const HEALTH_REGEN_PER_HOUR = 10;
 const HEALTH_REGEN_TICK_MS = 10 * 60 * 1000;
 
 function healthRegenTick() {
-  const now = Math.floor(Date.now() / 1000);
+  try {
+    const now = Math.floor(Date.now() / 1000);
 
-  const rows = db.prepare('SELECT user_id, health, max_health, last_regen_at FROM user_health WHERE health < max_health').all();
-  for (const row of rows) {
-    const elapsedSeconds = row.last_regen_at ? now - row.last_regen_at : 3600;
-    const gain = Math.floor((elapsedSeconds / 3600) * HEALTH_REGEN_PER_HOUR);
-    if (gain > 0) {
-      db.prepare('UPDATE user_health SET health = MIN(max_health, health + ?), last_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
+    const rows = db.prepare('SELECT user_id, health, max_health, last_regen_at FROM user_health WHERE health < max_health').all();
+    for (const row of rows) {
+      const elapsedSeconds = row.last_regen_at ? now - row.last_regen_at : 3600;
+      const gain = Math.floor((elapsedSeconds / 3600) * HEALTH_REGEN_PER_HOUR);
+      if (gain > 0) {
+        db.prepare('UPDATE user_health SET health = MIN(max_health, health + ?), last_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
+      }
     }
-  }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const regenState = db.prepare('SELECT last_full_restore_date FROM health_regen_state WHERE id = 1').get();
-  const hour = new Date().getHours();
-  if (hour === 4 && regenState.last_full_restore_date !== today) {
-    db.prepare('UPDATE user_health SET health = max_health, last_regen_at = ? WHERE health < max_health').run(now);
-    db.prepare('UPDATE health_regen_state SET last_full_restore_date = ? WHERE id = 1').run(today);
+    const today = new Date().toISOString().slice(0, 10);
+    const regenState = db.prepare('SELECT last_full_restore_date FROM health_regen_state WHERE id = 1').get();
+    const hour = new Date().getHours();
+    if (hour === 4 && regenState.last_full_restore_date !== today) {
+      db.prepare('UPDATE user_health SET health = max_health, last_regen_at = ? WHERE health < max_health').run(now);
+      db.prepare('UPDATE health_regen_state SET last_full_restore_date = ? WHERE id = 1').run(today);
+    }
+  } catch (err) {
+    console.error('healthRegenTick failed:', err.message);
   }
 }
 setInterval(healthRegenTick, HEALTH_REGEN_TICK_MS);
