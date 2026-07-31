@@ -227,6 +227,42 @@ db.exec(`
   )
 `);
 
+// Health for every chat participant (global per user_id, not per-chat —
+// one health total across every chat this bot serves). Written here by the
+// regen job below and the mute-reply branch; also written directly by
+// troll-bot's "Драка" game via the same cross-process connection pattern
+// already used for troll_smell (see troll-bot's bot.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_health (
+    user_id INTEGER PRIMARY KEY,
+    health INTEGER NOT NULL DEFAULT 100,
+    max_health INTEGER NOT NULL DEFAULT 100,
+    last_regen_at INTEGER
+  )
+`);
+// Critical-hit injuries from "Драка" (see troll-bot) — one of 'arm' | 'leg'
+// | 'head', always exactly one at a time (a fresh crit overwrites), lazily
+// expired 24h after being set (checked at read time, same idiom as mutes/
+// troll_smell rather than a separate cleanup job).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS injuries (
+    user_id INTEGER PRIMARY KEY,
+    injury_type TEXT NOT NULL,
+    injured_until INTEGER NOT NULL
+  )
+`);
+// Singleton row gating the once-daily 04:00 full health restore (see the
+// regen job below) — same CHECK (id = 1) singleton idiom troll-bot uses for
+// troll_state, just here so the restore doesn't refire every tick during
+// the 04:00 hour.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS health_regen_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_full_restore_date TEXT
+  )
+`);
+db.prepare('INSERT OR IGNORE INTO health_regen_state (id, last_full_restore_date) VALUES (1, NULL)').run();
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
