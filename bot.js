@@ -240,6 +240,12 @@ db.exec(`
     last_regen_at INTEGER
   )
 `);
+// /hide (see the PvP section below) — protects a person from /kick for 1h.
+// Separate ALTER since the column didn't exist when user_health was first
+// deployed.
+try {
+  db.exec('ALTER TABLE user_health ADD COLUMN hidden_until INTEGER');
+} catch {}
 // Critical-hit injuries from "Драка" (see troll-bot) — one of 'arm' | 'leg'
 // | 'head', always exactly one at a time (a fresh crit overwrites), lazily
 // expired 24h after being set (checked at read time, same idiom as mutes/
@@ -777,6 +783,14 @@ function getUserHealth(userId) {
   return db.prepare('SELECT health, max_health FROM user_health WHERE user_id = ?').get(userId);
 }
 
+// /hide protection — lazily read, no separate cleanup needed since it's
+// just a timestamp comparison (same idiom as getUserInjury's expiry check,
+// minus the DELETE since there's no separate row to remove).
+function isHidden(userId) {
+  const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(userId);
+  return !!row && !!row.hidden_until && row.hidden_until * 1000 > Date.now();
+}
+
 // UPDATE...RETURNING keeps the floor-then-read atomic against the regen
 // tick's own concurrent writes (see healthRegenTick below).
 function damageHuman(userId, chatId, username, damage) {
@@ -802,9 +816,31 @@ function checkPvpCooldown(userId) {
   return 0;
 }
 
+// Separate cooldown map from pvpCooldowns — /hide gates how often you can
+// re-trigger your OWN hiding, not how often you can attack.
+const hideCooldowns = new Map();
+const HIDE_COOLDOWN_MS = 20 * 60 * 1000;
+const HIDE_DURATION_MS = 60 * 60 * 1000;
+
 bot.onText(/\/me\b/, (msg) => {
   const health = getUserHealth(msg.from.id);
   bot.sendMessage(msg.chat.id, `❤️ Твоё здоровье: ${health.health}/${health.max_health}`, threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/hide\b/, (msg) => {
+  const last = hideCooldowns.get(msg.from.id);
+  const elapsed = last ? Date.now() - last : Infinity;
+  if (elapsed < HIDE_COOLDOWN_MS) {
+    const remaining = Math.ceil((HIDE_COOLDOWN_MS - elapsed) / 60000);
+    bot.sendMessage(msg.chat.id, `Можно прятаться не чаще раза в 20 минут — подожди ещё ${remaining} мин.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  hideCooldowns.set(msg.from.id, Date.now());
+  getUserHealth(msg.from.id);
+  const hiddenUntil = Math.floor((Date.now() + HIDE_DURATION_MS) / 1000);
+  db.prepare('UPDATE user_health SET hidden_until = ? WHERE user_id = ?').run(hiddenUntil, msg.from.id);
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  bot.sendMessage(msg.chat.id, `🫥 ${actorLabel} спрятался от драк на час.`, threadOpts(msg)).catch(() => {});
 });
 
 // Target resolution: reply-to-message first, else a best-effort
@@ -836,6 +872,11 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя ударить самого себя!`, threadOpts(msg)).catch(() => {});
     return;
   }
+  const targetLabel = target.username ? `@${target.username}` : target.firstName;
+  if (isHidden(target.id)) {
+    bot.sendMessage(msg.chat.id, `${targetLabel} прячется от драк — недоступен для удара.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
 
   const injury = getUserInjury(msg.from.id);
   if (injury) {
@@ -857,7 +898,6 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     return;
   }
 
-  const targetLabel = target.username ? `@${target.username}` : target.firstName;
   const weapon = pick(PVP_WEAPONS);
   const bodyPart = pick(PVP_BODY_PARTS);
   const roll = Math.floor(Math.random() * 101);
@@ -1701,6 +1741,7 @@ bot.onText(/\/help\b/, (msg) => {
     'PvP:',
     '/me — твоё здоровье',
     '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на сутки, 0 здоровья — мут на 30 мин)',
+    '/hide — спрятаться от /kick на час (сама команда — раз в 20 минут)',
     '',
     'DedoVirus.2026 (эпидемия):',
     '/0patient — назначить нулевого пациента (ответ на сообщение, админ)',
