@@ -824,7 +824,22 @@ const HIDE_DURATION_MS = 60 * 60 * 1000;
 
 bot.onText(/\/me\b/, (msg) => {
   const health = getUserHealth(msg.from.id);
-  bot.sendMessage(msg.chat.id, `❤️ Твоё здоровье: ${health.health}/${health.max_health}`, threadOpts(msg)).catch(() => {});
+  const lines = [`❤️ Твоё здоровье: ${health.health}/${health.max_health}`];
+
+  const injuryRow = db.prepare('SELECT injury_type, injured_until FROM injuries WHERE user_id = ?').get(msg.from.id);
+  if (injuryRow && injuryRow.injured_until * 1000 < Date.now()) {
+    db.prepare('DELETE FROM injuries WHERE user_id = ?').run(msg.from.id);
+  } else if (injuryRow) {
+    const injuryName = injuryRow.injury_type === 'arm' ? 'рука' : injuryRow.injury_type === 'leg' ? 'нога' : 'голова';
+    lines.push(`🤕 Травма: ${injuryName} (осталось ${formatExpire(injuryRow.injured_until)})`);
+  }
+
+  const healthRow = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(msg.from.id);
+  if (healthRow && healthRow.hidden_until && healthRow.hidden_until * 1000 > Date.now()) {
+    lines.push(`🫥 Прячешься от драк (осталось ${formatExpire(healthRow.hidden_until)})`);
+  }
+
+  bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
 bot.onText(/\/hide\b/, (msg) => {
