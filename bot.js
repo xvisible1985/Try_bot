@@ -768,12 +768,16 @@ function getUserInjury(userId) {
   return row.injury_type;
 }
 
+// Recovery time is rolled fresh each time (2-24h inclusive), not a flat
+// 24h — returns the rolled hours so callers can state it in their message.
 function applyInjury(userId, injuryType) {
-  const injuredUntil = Math.floor(Date.now() / 1000) + 24 * 3600;
+  const healHours = Math.floor(Math.random() * 23) + 2;
+  const injuredUntil = Math.floor(Date.now() / 1000) + healHours * 3600;
   db.prepare(
     'INSERT INTO injuries (user_id, injury_type, injured_until) VALUES (?, ?, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET injury_type = excluded.injury_type, injured_until = excluded.injured_until'
   ).run(userId, injuryType, injuredUntil);
+  return healHours;
 }
 
 // Lazily creates a 100/100 row on first access, same as troll-bot's own
@@ -936,11 +940,11 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
 
   if (roll >= 90) {
     const injuryType = pick(['arm', 'leg', 'head']);
-    applyInjury(target.id, injuryType);
+    const healHours = applyInjury(target.id, injuryType);
     const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
     await bot.sendMessage(
       msg.chat.id,
-      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на сутки).`,
+      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healHours} ч).`,
       threadOpts(msg)
     ).catch(() => {});
   }
@@ -1755,7 +1759,7 @@ bot.onText(/\/help\b/, (msg) => {
     '',
     'PvP:',
     '/me — твоё здоровье',
-    '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на сутки, 0 здоровья — мут на 30 мин)',
+    '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин)',
     '/hide — спрятаться от /kick на час (сама команда — раз в 20 минут)',
     '',
     'DedoVirus.2026 (эпидемия):',
