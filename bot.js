@@ -246,6 +246,15 @@ db.exec(`
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN hidden_until INTEGER');
 } catch {}
+// Energy: separate resource from health, spent 1-per-swing on /kick (and
+// troll-bot's /fight, via its own cross-process connection to this same
+// table), regenerating 1 per 20 minutes up to max_energy. Same
+// ALTER-since-table-already-existed idiom as hidden_until above.
+for (const [column, def] of [['energy', 'INTEGER NOT NULL DEFAULT 10'], ['max_energy', 'INTEGER NOT NULL DEFAULT 10'], ['last_energy_regen_at', 'INTEGER']]) {
+  try {
+    db.exec(`ALTER TABLE user_health ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
 // Critical-hit injuries from "Драка" (see troll-bot) — one of 'arm' | 'leg'
 // | 'head', always exactly one at a time (a fresh crit overwrites), lazily
 // expired 24h after being set (checked at read time, same idiom as mutes/
@@ -784,7 +793,17 @@ function applyInjury(userId, injuryType) {
 // copy of this helper.
 function getUserHealth(userId) {
   db.prepare('INSERT OR IGNORE INTO user_health (user_id, health, max_health) VALUES (?, 100, 100)').run(userId);
-  return db.prepare('SELECT health, max_health FROM user_health WHERE user_id = ?').get(userId);
+  return db.prepare('SELECT health, max_health, energy, max_energy FROM user_health WHERE user_id = ?').get(userId);
+}
+
+// Spends 1 energy for a /kick attempt. Returns the remaining energy on
+// success, or null if the person has none left (row is guaranteed to exist
+// by the getUserHealth call, so null unambiguously means "not enough
+// energy", never "no row").
+function consumeEnergy(userId) {
+  getUserHealth(userId);
+  const row = db.prepare('UPDATE user_health SET energy = energy - 1 WHERE user_id = ? AND energy > 0 RETURNING energy').get(userId);
+  return row ? row.energy : null;
 }
 
 // /hide protection — lazily read, no separate cleanup needed since it's
@@ -828,7 +847,10 @@ const HIDE_DURATION_MS = 60 * 60 * 1000;
 
 bot.onText(/\/me\b/, (msg) => {
   const health = getUserHealth(msg.from.id);
-  const lines = [`❤️ Твоё здоровье: ${health.health}/${health.max_health}`];
+  const lines = [
+    `❤️ Твоё здоровье: ${health.health}/${health.max_health}`,
+    `⚡ Энергия: ${health.energy}/${health.max_energy}`,
+  ];
 
   const injuryRow = db.prepare('SELECT injury_type, injured_until FROM injuries WHERE user_id = ?').get(msg.from.id);
   if (injuryRow && injuryRow.injured_until * 1000 < Date.now()) {
@@ -907,6 +929,10 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msg)).catch(() => {});
     return;
   }
+  if (attackerHealth.energy === 0) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msg)).catch(() => {});
+    return;
+  }
   const cooldownRemaining = checkPvpCooldown(msg.from.id);
   if (cooldownRemaining > 0) {
     bot.sendMessage(
@@ -916,6 +942,8 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     ).catch(() => {});
     return;
   }
+
+  consumeEnergy(msg.from.id);
 
   const weapon = pick(PVP_WEAPONS);
   const bodyPart = pick(PVP_BODY_PARTS);
@@ -1758,8 +1786,8 @@ bot.onText(/\/help\b/, (msg) => {
     '** [текст] — действие от третьего лица',
     '',
     'PvP:',
-    '/me — твоё здоровье',
-    '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин)',
+    '/me — здоровье, энергия, травма и укрытие',
+    '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин; тратит 1 энергию из 10, восстановление — 1 за 20 мин)',
     '/hide — спрятаться от /kick на час (сама команда — раз в 20 минут)',
     '',
     'DedoVirus.2026 (эпидемия):',
@@ -1865,6 +1893,11 @@ bot.on('message', (msg) => console.log('сообщение от:', msg.from?.use
 // calendar day rather than on every tick during the 04:00 hour.
 const HEALTH_REGEN_PER_HOUR = 10;
 const HEALTH_REGEN_TICK_MS = 10 * 60 * 1000;
+// Energy regens on its own fixed cadence (1 point per 20 minutes, no
+// proration) rather than health's per-hour rate — simpler since 1 is
+// already the smallest unit, so partial-interval gains would always be 0
+// anyway.
+const ENERGY_REGEN_INTERVAL_SECONDS = 20 * 60;
 
 function healthRegenTick() {
   try {
@@ -1876,6 +1909,15 @@ function healthRegenTick() {
       const gain = Math.floor((elapsedSeconds / 3600) * HEALTH_REGEN_PER_HOUR);
       if (gain > 0) {
         db.prepare('UPDATE user_health SET health = MIN(max_health, health + ?), last_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
+      }
+    }
+
+    const energyRows = db.prepare('SELECT user_id, energy, max_energy, last_energy_regen_at FROM user_health WHERE energy < max_energy').all();
+    for (const row of energyRows) {
+      const elapsedSeconds = row.last_energy_regen_at ? now - row.last_energy_regen_at : ENERGY_REGEN_INTERVAL_SECONDS;
+      const gain = Math.floor(elapsedSeconds / ENERGY_REGEN_INTERVAL_SECONDS);
+      if (gain > 0) {
+        db.prepare('UPDATE user_health SET energy = MIN(max_energy, energy + ?), last_energy_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
       }
     }
 
