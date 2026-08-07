@@ -278,9 +278,9 @@ db.exec(`
 `);
 db.prepare('INSERT OR IGNORE INTO health_regen_state (id, last_full_restore_date) VALUES (1, NULL)').run();
 
-// Real, stealable weapons (see WEAPON_DEFS below and
-// docs/superpowers/specs/2026-08-07-real-weapons-design.md) — two rows,
-// seeded once to their named starting owners by username. owner_user_id
+// Real, stealable weapons (see WEAPON_DEFS below and, in the sibling
+// troll-bot repo, docs/superpowers/specs/2026-08-07-real-weapons-design.md)
+// — two rows, seeded once to their named starting owners by username. owner_user_id
 // stays NULL until that username is seen in chat (see the message handler
 // below); after that, and after any steal, owner_user_id/owner_username
 // are always the live current holder. Same dual-create idiom as
