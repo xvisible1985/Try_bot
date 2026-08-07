@@ -278,6 +278,26 @@ db.exec(`
 `);
 db.prepare('INSERT OR IGNORE INTO health_regen_state (id, last_full_restore_date) VALUES (1, NULL)').run();
 
+// Real, stealable weapons (see WEAPON_DEFS below and
+// docs/superpowers/specs/2026-08-07-real-weapons-design.md) — two rows,
+// seeded once to their named starting owners by username. owner_user_id
+// stays NULL until that username is seen in chat (see the message handler
+// below); after that, and after any steal, owner_user_id/owner_username
+// are always the live current holder. Same dual-create idiom as
+// troll_smell/user_health above — troll-bot creates this table too, so
+// deploy order between the two bots doesn't matter.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS weapon_ownership (
+    weapon_key TEXT PRIMARY KEY,
+    seed_username TEXT,
+    owner_type TEXT NOT NULL DEFAULT 'human',
+    owner_user_id INTEGER,
+    owner_username TEXT
+  )
+`);
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'Anoki5', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternelFun', 'human', NULL, NULL)").run();
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
@@ -767,6 +787,15 @@ const PVP_INJURY_REFUSAL_TEXT = {
   head: 'твоя голова ещё болит, не до драки!',
 };
 
+// Static per-weapon flavor/multiplier for the two real, stealable weapons
+// (see weapon_ownership above for who currently holds them). Duplicated
+// identically in troll-bot's bot.js — same idiom as PVP_WEAPONS/
+// FIGHT_WEAPONS already being duplicated per-repo.
+const WEAPON_DEFS = {
+  bat: { name: 'бита', instrumental: 'битой', accusative: 'биту', multiplier: 1.5, emoji: '🏏' },
+  axe: { name: 'топор', instrumental: 'топором', accusative: 'топор', multiplier: 2.5, emoji: '🪓' },
+};
+
 function getUserInjury(userId) {
   const row = db.prepare('SELECT injury_type, injured_until FROM injuries WHERE user_id = ?').get(userId);
   if (!row) return null;
@@ -837,6 +866,47 @@ function checkPvpCooldown(userId) {
   if (elapsed < PVP_COOLDOWN_MS) return Math.ceil((PVP_COOLDOWN_MS - elapsed) / 1000);
   pvpCooldowns.set(userId, Date.now());
   return 0;
+}
+
+// Weapon keys currently held by a given owner — 0, 1, or 2 rows (a holder
+// can end up with both over time via maybeStealWeapon). ownerUserId is
+// ignored for ownerType 'troll' (there's only ever one troll).
+function getWeaponsFor(ownerType, ownerUserId) {
+  return ownerType === 'troll'
+    ? db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'troll'").all()
+    : db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?").all(ownerUserId);
+}
+
+// Picks the weapon for one swing: a real one if the attacker holds any
+// (random pick if they hold both), otherwise a random cosmetic word from
+// fallbackWeapons with multiplier 1 — today's flavor-only behavior,
+// unchanged for anyone who's never touched a real weapon. Returns
+// { key, text, multiplier } — key is null for the cosmetic fallback.
+function pickWeaponForAttacker(ownerType, ownerUserId, fallbackWeapons) {
+  const owned = getWeaponsFor(ownerType, ownerUserId);
+  if (owned.length > 0) {
+    const key = pick(owned.map(row => row.weapon_key));
+    const def = WEAPON_DEFS[key];
+    return { key, text: def.instrumental, multiplier: def.multiplier };
+  }
+  return { key: null, text: pick(fallbackWeapons), multiplier: 1 };
+}
+
+// 5% chance to steal the target's currently-held real weapon after a crit
+// lands on them — call this right after every applyInjury(...) against a
+// human. attacker is {type:'human', userId, username, firstName} or
+// {type:'troll'}. Returns the stolen weapon_key, or null if nothing was
+// stolen (missed the 5% roll, or the target didn't hold a real weapon).
+function maybeStealWeapon(targetUserId, attacker) {
+  if (Math.random() >= 0.05) return null;
+  const row = db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?").get(targetUserId);
+  if (!row) return null;
+  if (attacker.type === 'troll') {
+    db.prepare("UPDATE weapon_ownership SET owner_type = 'troll', owner_user_id = NULL, owner_username = NULL WHERE weapon_key = ?").run(row.weapon_key);
+  } else {
+    db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?").run(attacker.userId, attacker.username || attacker.firstName, row.weapon_key);
+  }
+  return row.weapon_key;
 }
 
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
@@ -1451,6 +1521,14 @@ const HEAD_INJURY_PHRASES = [
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
+  // One-time weapon-owner resolution: fires at most once per weapon key —
+  // once owner_user_id is non-null this UPDATE touches 0 rows every time
+  // after (steals overwrite owner_user_id directly, they don't null it
+  // back out). Must run unconditionally, before any early return below, so
+  // a muted/fisher/molchun @Anoki5 or @InternelFun still gets linked up.
+  if (msg.from.username) {
+    db.prepare("UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_user_id IS NULL").run(msg.from.id, msg.from.username, msg.from.username);
+  }
   // must run first, unconditionally — otherwise muted/fisher/molchun users' messages never enter the recency buffer, breaking cough-targeting later
   const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const virusPriorRecent = getVirusRecent(msg.chat.id);
