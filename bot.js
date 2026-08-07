@@ -1056,7 +1056,7 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
       const stolenDef = WEAPON_DEFS[stolenKey];
       await bot.sendMessage(
         msg.chat.id,
-        `${stolenDef.emoji} ${actorLabel} отобрал ${stolenDef.accusative} у ${targetLabel} и теперь бьёт им сам!`,
+        `${stolenDef.emoji} ${actorLabel} отобрал ${stolenDef.accusative} у ${targetLabel} и теперь бьёт ${stolenDef.instrumental} сам!`,
         threadOpts(msg)
       ).catch(() => {});
     }
