@@ -930,6 +930,11 @@ bot.onText(/\/me\b/, (msg) => {
     lines.push(`🤕 Травма: ${injuryName} (осталось ${formatExpire(injuryRow.injured_until)})`);
   }
 
+  for (const row of getWeaponsFor('human', msg.from.id)) {
+    const def = WEAPON_DEFS[row.weapon_key];
+    lines.push(`${def.emoji} Ты держишь ${def.name}: урон ×${def.multiplier}`);
+  }
+
   const healthRow = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(msg.from.id);
   if (healthRow && healthRow.hidden_until && healthRow.hidden_until * 1000 > Date.now()) {
     lines.push(`🫥 Прячешься от драк (осталось ${formatExpire(healthRow.hidden_until)})`);
@@ -1015,20 +1020,21 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
 
   consumeEnergy(msg.from.id);
 
-  const weapon = pick(PVP_WEAPONS);
+  const weapon = pickWeaponForAttacker('human', msg.from.id, PVP_WEAPONS);
   const bodyPart = pick(PVP_BODY_PARTS);
   const roll = Math.floor(Math.random() * 101);
   const success = roll >= 50;
   const outcome = success ? '✅ удачно' : '❌ неудачно';
   await bot.sendMessage(
     msg.chat.id,
-    `${actorLabel} — ударить ${targetLabel} ${weapon} ${bodyPart} ${outcome}: ${roll}/100`,
+    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100`,
     threadOpts(msg)
   ).catch(() => {});
   if (!success) return;
 
   const targetHealthBefore = getUserHealth(target.id);
-  const dmg = Math.floor(Math.random() * 20) + 1;
+  const rawDmg = Math.floor(Math.random() * 20) + 1;
+  const dmg = Math.round(rawDmg * weapon.multiplier);
   const targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
   await bot.sendMessage(
     msg.chat.id,
@@ -1045,6 +1051,15 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
       `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healHours} ч).`,
       threadOpts(msg)
     ).catch(() => {});
+    const stolenKey = maybeStealWeapon(target.id, { type: 'human', userId: msg.from.id, username: msg.from.username, firstName: msg.from.first_name });
+    if (stolenKey) {
+      const stolenDef = WEAPON_DEFS[stolenKey];
+      await bot.sendMessage(
+        msg.chat.id,
+        `${stolenDef.emoji} ${actorLabel} отобрал ${stolenDef.accusative} у ${targetLabel} и теперь бьёт им сам!`,
+        threadOpts(msg)
+      ).catch(() => {});
+    }
   }
 });
 
