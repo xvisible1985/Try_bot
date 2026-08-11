@@ -296,7 +296,7 @@ db.exec(`
   )
 `);
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'Anoki5', 'human', NULL, NULL)").run();
-db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternelFun', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -1544,7 +1544,7 @@ bot.on('message', async (msg) => {
   // UPDATE and overwrite owner_user_id/owner_username back to the human
   // while owner_type stayed 'troll' — an inconsistent row. Must run
   // unconditionally, before any early return below, so a muted/fisher/
-  // molchun @Anoki5 or @InternelFun still gets linked up the first time.
+  // molchun @Anoki5 or @InternalFun still gets linked up the first time.
   if (msg.from.username) {
     db.prepare("UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_type = 'human' AND owner_user_id IS NULL").run(msg.from.id, msg.from.username, msg.from.username);
   }
