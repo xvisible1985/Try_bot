@@ -1536,13 +1536,17 @@ const HEAD_INJURY_PHRASES = [
 // --- Filter muted & animal messages ---
 bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
-  // One-time weapon-owner resolution: fires at most once per weapon key —
-  // once owner_user_id is non-null this UPDATE touches 0 rows every time
-  // after (steals overwrite owner_user_id directly, they don't null it
-  // back out). Must run unconditionally, before any early return below, so
-  // a muted/fisher/molchun @Anoki5 or @InternelFun still gets linked up.
+  // One-time weapon-owner resolution: fires at most once per weapon key,
+  // ever — gated on owner_type = 'human' as well as owner_user_id IS NULL
+  // because a troll steal also sets owner_user_id back to NULL (see
+  // maybeStealWeapon's troll branch), and without this guard a message
+  // from the original seed user after a troll steal would re-fire this
+  // UPDATE and overwrite owner_user_id/owner_username back to the human
+  // while owner_type stayed 'troll' — an inconsistent row. Must run
+  // unconditionally, before any early return below, so a muted/fisher/
+  // molchun @Anoki5 or @InternelFun still gets linked up the first time.
   if (msg.from.username) {
-    db.prepare("UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_user_id IS NULL").run(msg.from.id, msg.from.username, msg.from.username);
+    db.prepare("UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_type = 'human' AND owner_user_id IS NULL").run(msg.from.id, msg.from.username, msg.from.username);
   }
   // must run first, unconditionally — otherwise muted/fisher/molchun users' messages never enter the recency buffer, breaking cough-targeting later
   const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
