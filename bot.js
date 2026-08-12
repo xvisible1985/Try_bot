@@ -2086,6 +2086,7 @@ setInterval(healthRegenTick, HEALTH_REGEN_TICK_MS);
 // free) and announce it, then — at most once per 5 minutes, tracked via
 // last_bleed_stop_attempt_at — roll a 50/50 to end the bleed early.
 const BLEED_TICK_MS = 60 * 1000;
+const BLEED_STOP_ROLL_INTERVAL_SECONDS = 5 * 60;
 function bleedTick() {
   try {
     const now = Math.floor(Date.now() / 1000);
@@ -2100,7 +2101,7 @@ function bleedTick() {
       const before = row.health;
       const after = damageHuman(row.user_id, row.bleed_chat_id, null, 1);
       bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение: -1 хп (${before} -> ${after})`).catch(() => {});
-      if (!row.last_bleed_stop_attempt_at || now - row.last_bleed_stop_attempt_at >= 300) {
+      if (!row.last_bleed_stop_attempt_at || now - row.last_bleed_stop_attempt_at >= BLEED_STOP_ROLL_INTERVAL_SECONDS) {
         if (Math.random() < 0.5) {
           db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL, last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
           bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось.').catch(() => {});
