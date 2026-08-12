@@ -255,6 +255,16 @@ for (const [column, def] of [['energy', 'INTEGER NOT NULL DEFAULT 10'], ['max_en
     db.exec(`ALTER TABLE user_health ADD COLUMN ${column} ${def}`);
   } catch {}
 }
+// Bleed, from the rusty scissors real weapon (see WEAPON_DEFS.scissors and
+// applyBleed below) — bleed_until is when it naturally ends, bleed_chat_id
+// is where the dedicated bleedTick (see far below) announces ticks/stops
+// for this user, last_bleed_stop_attempt_at gates the 5-minute 50/50 roll
+// to end it early. Same ALTER idiom as energy/hidden_until above.
+for (const [column, def] of [['bleed_until', 'INTEGER'], ['bleed_chat_id', 'INTEGER'], ['last_bleed_stop_attempt_at', 'INTEGER']]) {
+  try {
+    db.exec(`ALTER TABLE user_health ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
 // Critical-hit injuries from "Драка" (see troll-bot) — one of 'arm' | 'leg'
 // | 'head', always exactly one at a time (a fresh crit overwrites), lazily
 // expired 24h after being set (checked at read time, same idiom as mutes/
@@ -280,7 +290,7 @@ db.prepare('INSERT OR IGNORE INTO health_regen_state (id, last_full_restore_date
 
 // Real, stealable weapons (see WEAPON_DEFS below and, in the sibling
 // troll-bot repo, docs/superpowers/specs/2026-08-07-real-weapons-design.md)
-// — two rows, seeded once to their named starting owners by username. owner_user_id
+// — three rows, seeded once to their named starting owners by username. owner_user_id
 // stays NULL until that username is seen in chat (see the message handler
 // below); after that, and after any steal, owner_user_id/owner_username
 // are always the live current holder. Same dual-create idiom as
@@ -297,6 +307,7 @@ db.exec(`
 `);
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'ANOKI5', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('scissors', 'AliyaKuzAli', 'human', NULL, NULL)").run();
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -787,13 +798,17 @@ const PVP_INJURY_REFUSAL_TEXT = {
   head: 'твоя голова ещё болит, не до драки!',
 };
 
-// Static per-weapon flavor/multiplier for the two real, stealable weapons
-// (see weapon_ownership above for who currently holds them). Duplicated
-// identically in troll-bot's bot.js — same idiom as PVP_WEAPONS/
-// FIGHT_WEAPONS already being duplicated per-repo.
+// Static per-weapon flavor/multiplier for the three real, stealable
+// weapons (see weapon_ownership above for who currently holds them).
+// Duplicated identically in troll-bot's bot.js — same idiom as
+// PVP_WEAPONS/FIGHT_WEAPONS already being duplicated per-repo. Scissors
+// alone also cause bleed + a chance of a severed finger — see applyBleed
+// below and every call site's `weapon.key === 'scissors'` check (see
+// docs/superpowers/specs/2026-08-12-scissors-bleed-design.md).
 const WEAPON_DEFS = {
   bat: { name: 'бита', instrumental: 'битой', accusative: 'биту', multiplier: 1.5, emoji: '🏏' },
   axe: { name: 'топор', instrumental: 'топором', accusative: 'топор', multiplier: 2.5, emoji: '🪓' },
+  scissors: { name: 'ножницы', instrumental: 'ножницами', accusative: 'ножницы', multiplier: 1.25, emoji: '✂️' },
 };
 
 function getUserInjury(userId) {
@@ -907,6 +922,18 @@ function maybeStealWeapon(targetUserId, attacker) {
     db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?").run(attacker.userId, attacker.username || attacker.firstName, row.weapon_key);
   }
   return row.weapon_key;
+}
+
+// Starts (or refreshes) a 20-minute bleed on a scissors hit — see the
+// dedicated bleedTick further below for how it's actually processed (1
+// HP/min, 5-min 50/50 stop-roll, natural expiry). Always overwrites
+// bleed_until on every call, so a fresh scissors hit while already
+// bleeding just resets the clock rather than stacking. bleed_chat_id is
+// stored purely so bleedTick knows where to announce ticks/stops for this
+// user.
+function applyBleed(userId, chatId) {
+  const until = Math.floor(Date.now() / 1000) + 20 * 60;
+  db.prepare('UPDATE user_health SET bleed_until = ?, bleed_chat_id = ? WHERE user_id = ?').run(until, chatId, userId);
 }
 
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
