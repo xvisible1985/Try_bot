@@ -960,6 +960,12 @@ bot.onText(/\/me\b/, (msg) => {
     lines.push(`🤕 Травма: ${injuryName} (осталось ${formatExpire(injuryRow.injured_until)})`);
   }
 
+  const bleedRow = db.prepare('SELECT bleed_until FROM user_health WHERE user_id = ?').get(msg.from.id);
+  if (bleedRow && bleedRow.bleed_until && bleedRow.bleed_until * 1000 > Date.now()) {
+    const minutesLeft = Math.ceil((bleedRow.bleed_until - Math.floor(Date.now() / 1000)) / 60);
+    lines.push(`🩸 Истекаешь кровью: ещё ~${minutesLeft} мин`);
+  }
+
   for (const row of getWeaponsFor('human', msg.from.id)) {
     const def = WEAPON_DEFS[row.weapon_key];
     lines.push(`${def.emoji} Ты держишь ${def.name}: урон ×${def.multiplier}`);
@@ -2068,5 +2074,45 @@ function healthRegenTick() {
   }
 }
 setInterval(healthRegenTick, HEALTH_REGEN_TICK_MS);
+
+// Bleed tick (see applyBleed and every `weapon.key === 'scissors'` call
+// site) — 1-minute granularity because the mechanic itself is 1 HP/minute,
+// much finer than healthRegenTick's 10-minute cadence, so it needs its own
+// interval rather than piggybacking on that one. Every user currently
+// bleeding, every minute: if the 20-minute window already elapsed, clear
+// it and announce a natural stop; else if they're already at 0 health,
+// skip entirely (no point re-spamming a downed target); else deduct 1 HP
+// via damageHuman (which already handles the 0-health-mutes floor for
+// free) and announce it, then — at most once per 5 minutes, tracked via
+// last_bleed_stop_attempt_at — roll a 50/50 to end the bleed early.
+const BLEED_TICK_MS = 60 * 1000;
+function bleedTick() {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const rows = db.prepare('SELECT user_id, health, bleed_until, bleed_chat_id, last_bleed_stop_attempt_at FROM user_health WHERE bleed_until IS NOT NULL').all();
+    for (const row of rows) {
+      if (row.bleed_until <= now) {
+        db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL WHERE user_id = ?').run(row.user_id);
+        bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось само.').catch(() => {});
+        continue;
+      }
+      if (row.health === 0) continue;
+      const before = row.health;
+      const after = damageHuman(row.user_id, row.bleed_chat_id, null, 1);
+      bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение: -1 хп (${before} -> ${after})`).catch(() => {});
+      if (!row.last_bleed_stop_attempt_at || now - row.last_bleed_stop_attempt_at >= 300) {
+        if (Math.random() < 0.5) {
+          db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL, last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
+          bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось.').catch(() => {});
+        } else {
+          db.prepare('UPDATE user_health SET last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('bleedTick failed:', err.message);
+  }
+}
+setInterval(bleedTick, BLEED_TICK_MS);
 
 console.log('Бот запущен...');
