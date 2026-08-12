@@ -1072,6 +1072,14 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     threadOpts(msg)
   ).catch(() => {});
 
+  if (weapon.key === 'scissors') {
+    applyBleed(target.id, msg.chat.id);
+    await bot.sendMessage(msg.chat.id, `🩸 ${targetLabel} начинает истекать кровью от ржавых ножниц!`, threadOpts(msg)).catch(() => {});
+    if (Math.random() < 0.05) {
+      await bot.sendMessage(msg.chat.id, `✂️ ${actorLabel} случайно отчекрыжил ${targetLabel} палец ржавыми ножницами!`, threadOpts(msg)).catch(() => {});
+    }
+  }
+
   if (roll >= 90) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
