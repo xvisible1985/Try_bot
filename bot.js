@@ -930,7 +930,10 @@ function maybeStealWeapon(targetUserId, attacker) {
 // bleed_until on every call, so a fresh scissors hit while already
 // bleeding just resets the clock rather than stacking. bleed_chat_id is
 // stored purely so bleedTick knows where to announce ticks/stops for this
-// user.
+// user. Call this only after damageHuman/getUserHealth has already
+// touched userId this same swing (true at every real call site) — the
+// row is not created here, so calling it before that would silently
+// no-op.
 function applyBleed(userId, chatId) {
   const until = Math.floor(Date.now() / 1000) + 20 * 60;
   db.prepare('UPDATE user_health SET bleed_until = ?, bleed_chat_id = ? WHERE user_id = ?').run(until, chatId, userId);
