@@ -288,6 +288,24 @@ db.exec(`
 `);
 db.prepare('INSERT OR IGNORE INTO health_regen_state (id, last_full_restore_date) VALUES (1, NULL)').run();
 
+// /kuniFun/kuniAlia/kuniTama self-buffs (see docs/superpowers/specs/
+// 2026-08-16-kuni-buffs-design.md). Two independent slots — crit (written
+// by kuniFun or kuniTama) and dodge (written by kuniAlia or kuniTama) —
+// each with its own expiry. The three *_cd_until columns are independent
+// per-command cooldowns, always equal to that command's own buff duration.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS buffs (
+    user_id INTEGER PRIMARY KEY,
+    crit_mult REAL,
+    crit_until INTEGER,
+    dodge_mult REAL,
+    dodge_until INTEGER,
+    fun_cd_until INTEGER,
+    alia_cd_until INTEGER,
+    tama_cd_until INTEGER
+  )
+`);
+
 // Real, stealable weapons (see WEAPON_DEFS below and, in the sibling
 // troll-bot repo, docs/superpowers/specs/2026-08-07-real-weapons-design.md)
 // — three rows, seeded once to their named starting owners by username. owner_user_id
@@ -838,6 +856,26 @@ function applyInjury(userId, injuryType) {
 function getUserHealth(userId) {
   db.prepare('INSERT OR IGNORE INTO user_health (user_id, health, max_health) VALUES (?, 100, 100)').run(userId);
   return db.prepare('SELECT health, max_health, energy, max_energy FROM user_health WHERE user_id = ?').get(userId);
+}
+
+// Base crit/injury threshold is 90 (see /kick below). An active kuniFun
+// buff lowers it to 84 (+50% crit chance, ~1.54x), kuniTama to 87 (+25%,
+// ~1.27x). crit_mult is only ever 1.5 or 1.25, so >= 1.5 disambiguates them.
+function getCritThreshold(userId) {
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT crit_mult, crit_until FROM buffs WHERE user_id = ?').get(userId);
+  if (row && row.crit_until > now) return row.crit_mult >= 1.5 ? 84 : 87;
+  return 90;
+}
+
+// Base hit threshold is 50 (see /kick below). A dodge buff on the
+// defender raises the threshold the attacker's roll must clear: kuniAlia
+// -> 75 (+50% dodge, ~1.50x), kuniTama -> 62 (+25%, ~1.24x).
+function getHitThreshold(targetId) {
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT dodge_mult, dodge_until FROM buffs WHERE user_id = ?').get(targetId);
+  if (row && row.dodge_until > now) return row.dodge_mult >= 1.5 ? 75 : 62;
+  return 50;
 }
 
 // Spends 1 energy for a /kick attempt. Returns the remaining energy on
