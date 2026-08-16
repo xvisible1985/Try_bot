@@ -123,22 +123,22 @@ git push
 
 **Files:** none (verification only, against the running bot — deploy is the user's own GitHub-based flow)
 
-- [ ] **Step 1: Confirm the happy path**
+- [x] **Step 1: Confirm the happy path**
 
 Get someone injured and/or bleeding (e.g. via a few `/kick`s until a crit lands, or a scissors hit for bleed). As an admin, reply `/heal` to their message. Expected: a message naming exactly what was healed (`травма`, `кровотечение`, or `травма и кровотечение`), and their subsequent `/me` no longer shows the injury/bleed lines.
 
-- [ ] **Step 2: Confirm the "nothing to heal" case**
+- [x] **Step 2: Confirm the "nothing to heal" case**
 
 Reply `/heal` to a healthy user's message. Expected: `<user> и так здоров, лечить нечего`.
 
-- [ ] **Step 3: Confirm admin-only enforcement**
+- [x] **Step 3: Confirm admin-only enforcement**
 
 Have a non-admin reply `/heal` to someone. Expected: silent no-op, no message at all (matching `/cure`'s own behavior for non-admins).
 
-- [ ] **Step 4: Confirm the no-reply case**
+- [x] **Step 4: Confirm the no-reply case**
 
 Send `/heal` without replying to anyone. Expected: `Ответь на сообщение`.
 
-- [ ] **Step 5: Final review commit (if any manual fixes were needed during verification)**
+- [x] **Step 5: Final review commit (if any manual fixes were needed during verification)**
 
 If verification surfaced no code changes, there is nothing to commit here. If it did, commit those fixes individually with a description of what was wrong, following the same commit-message style as Task 1.
