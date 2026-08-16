@@ -1450,6 +1450,34 @@ bot.onText(/\/cure\b/, async (msg) => {
   bot.sendMessage(msg.chat.id, `${user.username} вылечен от DedoVirus и получил иммунитет`, threadOpts(msg));
 });
 
+// Admin-only, reply-to-message targeting (same as /cure above) — clears
+// both an arm/leg/head injury and an active scissors bleed in one shot.
+// Deliberately doesn't touch health points or an active "драка" mute —
+// those are a separate mechanic (health regen ticks on its own, mute
+// expires on its own timer) and stay out of scope here. The DELETE/UPDATE
+// below are harmless no-ops if the respective condition was already
+// false, so there's no need to branch on each independently — only the
+// "nothing to heal at all" case needs its own early return/message.
+bot.onText(/\/heal\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  const user = await resolveUser(msg);
+  if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
+
+  const injuryRow = db.prepare('SELECT injury_type FROM injuries WHERE user_id = ?').get(user.id);
+  const bleedRow = db.prepare('SELECT bleed_until FROM user_health WHERE user_id = ?').get(user.id);
+  const wasBleeding = bleedRow && bleedRow.bleed_until && bleedRow.bleed_until * 1000 > Date.now();
+
+  if (!injuryRow && !wasBleeding) {
+    return bot.sendMessage(msg.chat.id, `${user.username} и так здоров, лечить нечего`, threadOpts(msg));
+  }
+
+  db.prepare('DELETE FROM injuries WHERE user_id = ?').run(user.id);
+  db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL WHERE user_id = ?').run(user.id);
+
+  const healed = [injuryRow && 'травма', wasBleeding && 'кровотечение'].filter(Boolean).join(' и ');
+  bot.sendMessage(msg.chat.id, `${user.username} вылечен: ${healed}`, threadOpts(msg));
+});
+
 bot.onText(/\/endvirus\b/, async (msg) => {
   if (!await isAdmin(msg)) return;
   db.exec('DELETE FROM virus_infections');
