@@ -17,7 +17,7 @@
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1451-1453` (insert new handler right after `/cure`, before `/endvirus`)
 
-- [ ] **Step 1: Insert the `/heal` handler between `/cure` and `/endvirus`**
+- [x] **Step 1: Insert the `/heal` handler between `/cure` and `/endvirus`**
 
 Find:
 
@@ -69,12 +69,12 @@ bot.onText(/\/heal\b/, async (msg) => {
 bot.onText(/\/endvirus\b/, async (msg) => {
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the injury/bleed clearing logic in isolation**
+- [x] **Step 3: Verify the injury/bleed clearing logic in isolation**
 
 ```bash
 node -e "
@@ -109,7 +109,7 @@ Expected:
 - `user 1 row after:` `undefined { bleed_until: null, bleed_chat_id: null }` (the injuries row is gone, `.get()` on it returns `undefined`)
 - `user 2 (has neither):` `nothing to heal`
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```bash
 git add bot.js
