@@ -1097,7 +1097,7 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   const weapon = pickWeaponForAttacker('human', msg.from.id, PVP_WEAPONS);
   const bodyPart = pick(PVP_BODY_PARTS);
   const roll = Math.floor(Math.random() * 101);
-  const success = roll >= 50;
+  const success = roll >= getHitThreshold(target.id);
   const outcome = success ? '✅ удачно' : '❌ неудачно';
   await bot.sendMessage(
     msg.chat.id,
@@ -1124,7 +1124,7 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     }
   }
 
-  if (roll >= 90) {
+  if (roll >= getCritThreshold(msg.from.id)) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
     const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
