@@ -1463,7 +1463,7 @@ bot.onText(/\/heal\b/, async (msg) => {
   const user = await resolveUser(msg);
   if (!user) return bot.sendMessage(msg.chat.id, 'Ответь на сообщение', threadOpts(msg));
 
-  const injuryRow = db.prepare('SELECT injury_type FROM injuries WHERE user_id = ?').get(user.id);
+  const injuryRow = db.prepare('SELECT 1 FROM injuries WHERE user_id = ?').get(user.id);
   const bleedRow = db.prepare('SELECT bleed_until FROM user_health WHERE user_id = ?').get(user.id);
   const wasBleeding = bleedRow && bleedRow.bleed_until && bleedRow.bleed_until * 1000 > Date.now();
 
@@ -1474,7 +1474,7 @@ bot.onText(/\/heal\b/, async (msg) => {
   db.prepare('DELETE FROM injuries WHERE user_id = ?').run(user.id);
   db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL WHERE user_id = ?').run(user.id);
 
-  const healed = [injuryRow && 'травма', wasBleeding && 'кровотечение'].filter(Boolean).join(' и ');
+  const healed = [injuryRow ? 'травма' : null, wasBleeding ? 'кровотечение' : null].filter(Boolean).join(' и ');
   bot.sendMessage(msg.chat.id, `${user.username} вылечен: ${healed}`, threadOpts(msg));
 });
 
