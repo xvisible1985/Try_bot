@@ -1145,6 +1145,58 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   }
 });
 
+// --- /kuniFun, /kuniAlia, /kuniTama: public self-buffs, no reply/target
+// needed (see docs/superpowers/specs/2026-08-16-kuni-buffs-design.md).
+// Each command's cooldown always matches its own buff's 10-minute
+// duration, so "on cooldown" and "buff still active" are the same check.
+bot.onText(/\/kuniFun\b/, async (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT fun_cd_until FROM buffs WHERE user_id = ?').get(msg.from.id);
+  if (row && row.fun_cd_until > now) {
+    const minutesLeft = Math.ceil((row.fun_cd_until - now) / 60);
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
+  }
+  const until = now + 600;
+  db.prepare(
+    'INSERT INTO buffs (user_id, crit_mult, crit_until, fun_cd_until) VALUES (?, 1.5, ?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET crit_mult = 1.5, crit_until = excluded.crit_until, fun_cd_until = excluded.fun_cd_until'
+  ).run(msg.from.id, until, until);
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни InternalFun и теперь стал более опасен ⚡ (+крит на 10 мин)`, threadOpts(msg));
+});
+
+bot.onText(/\/kuniAlia\b/, async (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT alia_cd_until FROM buffs WHERE user_id = ?').get(msg.from.id);
+  if (row && row.alia_cd_until > now) {
+    const minutesLeft = Math.ceil((row.alia_cd_until - now) / 60);
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
+  }
+  const until = now + 600;
+  db.prepare(
+    'INSERT INTO buffs (user_id, dodge_mult, dodge_until, alia_cd_until) VALUES (?, 1.5, ?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET dodge_mult = 1.5, dodge_until = excluded.dodge_until, alia_cd_until = excluded.alia_cd_until'
+  ).run(msg.from.id, until, until);
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни AliyaKuzAli и теперь лучше уклоняется 🌀 (+уклонение на 10 мин)`, threadOpts(msg));
+});
+
+bot.onText(/\/kuniTama\b/, async (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT tama_cd_until FROM buffs WHERE user_id = ?').get(msg.from.id);
+  if (row && row.tama_cd_until > now) {
+    const minutesLeft = Math.ceil((row.tama_cd_until - now) / 60);
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
+  }
+  const until = now + 600;
+  db.prepare(
+    'INSERT INTO buffs (user_id, crit_mult, crit_until, dodge_mult, dodge_until, tama_cd_until) VALUES (?, 1.25, ?, 1.25, ?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET crit_mult = 1.25, crit_until = excluded.crit_until, dodge_mult = 1.25, dodge_until = excluded.dodge_until, tama_cd_until = excluded.tama_cd_until'
+  ).run(msg.from.id, until, until, until);
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни Tama и теперь стал опаснее и увёртливее ✨ (+крит и +уклонение на 10 мин)`, threadOpts(msg));
+});
+
 // --- Animal assign/unassign (admin only, reply required) ---
 for (const [animalType, { emoji }] of Object.entries(ANIMALS)) {
   bot.onText(new RegExp(`^\\/${animalType}\\b`, 'i'), async (msg) => {
