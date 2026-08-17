@@ -18,7 +18,7 @@
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:283-291` (new table, right after `health_regen_state`)
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:838-843` (new helpers, right after `getUserHealth`)
 
-- [ ] **Step 1: Add the `buffs` table**
+- [x] **Step 1: Add the `buffs` table**
 
 Find:
 
@@ -68,7 +68,7 @@ db.exec(`
 // troll-bot repo, docs/superpowers/specs/2026-08-07-real-weapons-design.md)
 ```
 
-- [ ] **Step 2: Add `getCritThreshold`/`getHitThreshold` helpers**
+- [x] **Step 2: Add `getCritThreshold`/`getHitThreshold` helpers**
 
 Find:
 
@@ -116,12 +116,12 @@ function getHitThreshold(targetId) {
 // Spends 1 energy for a /kick attempt. Returns the remaining energy on
 ```
 
-- [ ] **Step 3: Verify with a syntax check**
+- [x] **Step 3: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 4: Verify the threshold logic in isolation**
+- [x] **Step 4: Verify the threshold logic in isolation**
 
 ```bash
 node -e "
@@ -172,7 +172,7 @@ kuniTama active hit vs user3: 62 expected 62
 expired kuniFun crit: 90 expected 90
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bot.js
@@ -187,7 +187,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1108-1111` (insert new handlers right after `/kick`, before the "Animal assign/unassign" block)
 
-- [ ] **Step 1: Insert the three handlers after `/kick`**
+- [x] **Step 1: Insert the three handlers after `/kick`**
 
 Find:
 
@@ -273,12 +273,12 @@ bot.onText(/\/kuniTama\b/, async (msg) => {
 // --- Animal assign/unassign (admin only, reply required) ---
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the cooldown/insert logic in isolation**
+- [x] **Step 3: Verify the cooldown/insert logic in isolation**
 
 ```bash
 node -e "
@@ -322,7 +322,7 @@ kuniAlia cast on same user (independent slot): cast expected cast
 row after both: { crit_mult: 1.5, dodge_mult: 1.5 } expected { crit_mult: 1.5, dodge_mult: 1.5 }
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -337,7 +337,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1061-1089` (the `/kick` handler's roll/success/crit logic)
 
-- [ ] **Step 1: Replace the hardcoded hit and crit thresholds**
+- [x] **Step 1: Replace the hardcoded hit and crit thresholds**
 
 Find:
 
@@ -373,12 +373,12 @@ Replace with:
     const injuryType = pick(['arm', 'leg', 'head']);
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
