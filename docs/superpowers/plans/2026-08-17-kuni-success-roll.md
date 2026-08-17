@@ -17,7 +17,7 @@
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1152-1166`
 
-- [ ] **Step 1: Replace the `/kuniFun` handler**
+- [x] **Step 1: Replace the `/kuniFun` handler**
 
 Find:
 
@@ -67,12 +67,12 @@ bot.onText(/\/kuniFun\b/, async (msg) => {
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the roll branching logic in isolation**
+- [x] **Step 3: Verify the roll branching logic in isolation**
 
 ```bash
 node -e "
@@ -120,7 +120,7 @@ user 3 active crit_mult before failed re-cast: 1.5 expected 1.5
 user 3 active crit_mult after failed re-cast: 1.5 expected 1.5 (unchanged, buff not cleared by a failed re-cast)
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -135,7 +135,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1168-1182`
 
-- [ ] **Step 1: Replace the `/kuniAlia` handler**
+- [x] **Step 1: Replace the `/kuniAlia` handler**
 
 Find:
 
@@ -185,12 +185,12 @@ bot.onText(/\/kuniAlia\b/, async (msg) => {
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the roll branching logic in isolation**
+- [x] **Step 3: Verify the roll branching logic in isolation**
 
 ```bash
 node -e "
@@ -236,7 +236,7 @@ row after success: { dodge_mult: 1.5 } expected { dodge_mult: 1.5 }
 user 3 active dodge_mult after failed re-cast: 1.5 expected 1.5 (unchanged)
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -251,7 +251,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1184-1198`
 
-- [ ] **Step 1: Replace the `/kuniTama` handler**
+- [x] **Step 1: Replace the `/kuniTama` handler**
 
 Find:
 
@@ -301,12 +301,12 @@ bot.onText(/\/kuniTama\b/, async (msg) => {
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the roll branching logic in isolation**
+- [x] **Step 3: Verify the roll branching logic in isolation**
 
 ```bash
 node -e "
@@ -352,7 +352,7 @@ row after success: { crit_mult: 1.25, dodge_mult: 1.25 } expected { crit_mult: 1
 user 3 active mults after failed re-cast: { crit_mult: 1.25, dodge_mult: 1.25 } expected { crit_mult: 1.25, dodge_mult: 1.25 } (unchanged)
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
