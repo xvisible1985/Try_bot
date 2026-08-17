@@ -191,6 +191,14 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
+// Weapon-triggered timed "old man Dimon" status (see WEAPON_DEFS.crutch
+// and applyDimon below) — NULL means the existing PERMANENT status set
+// by admin /dimon (unchanged), a timestamp means a timed status from a
+// crutch hit that auto-expires. Separate ALTER since dimoniacs already
+// existed before this column — same idiom as user_health's hidden_until.
+try {
+  db.exec('ALTER TABLE dimoniacs ADD COLUMN dimon_until INTEGER');
+} catch {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS virus_infections (
@@ -326,6 +334,11 @@ db.exec(`
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'ANOKI5', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('scissors', 'AliyaKuzAli', 'human', NULL, NULL)").run();
+// Дима has no public Telegram @username, so the usual seed_username lazy
+// resolution (see the UPDATE ... WHERE seed_username = ? AND owner_user_id
+// IS NULL below) can't apply to him — his numeric id is already known, so
+// owner_user_id is populated immediately and seed_username stays NULL.
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -827,6 +840,7 @@ const WEAPON_DEFS = {
   bat: { name: 'бита', instrumental: 'битой', accusative: 'биту', multiplier: 1.5, emoji: '🏏' },
   axe: { name: 'топор', instrumental: 'топором', accusative: 'топор', multiplier: 2.5, emoji: '🪓' },
   scissors: { name: 'ножницы', instrumental: 'ножницами', accusative: 'ножницы', multiplier: 1.25, emoji: '✂️' },
+  crutch: { name: 'костыль', instrumental: 'костылём', accusative: 'костыль', multiplier: 1.25, emoji: '🩼' },
 };
 
 function getUserInjury(userId) {
