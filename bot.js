@@ -1158,11 +1158,19 @@ bot.onText(/\/kuniFun\b/, async (msg) => {
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
   }
   const until = now + 600;
+  const roll = Math.floor(Math.random() * 101);
+  if (roll < 50) {
+    db.prepare(
+      'INSERT INTO buffs (user_id, fun_cd_until) VALUES (?, ?) ' +
+      'ON CONFLICT(user_id) DO UPDATE SET fun_cd_until = excluded.fun_cd_until'
+    ).run(msg.from.id, until);
+    return bot.sendMessage(msg.chat.id, `${actorLabel} попытался сделать куни InternalFun, но не вышло 😅 (${roll}/100)`, threadOpts(msg));
+  }
   db.prepare(
     'INSERT INTO buffs (user_id, crit_mult, crit_until, fun_cd_until) VALUES (?, 1.5, ?, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET crit_mult = 1.5, crit_until = excluded.crit_until, fun_cd_until = excluded.fun_cd_until'
   ).run(msg.from.id, until, until);
-  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни InternalFun и теперь стал более опасен ⚡ (+крит на 10 мин)`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни InternalFun и теперь стал более опасен ⚡ (+крит на 10 мин): ${roll}/100`, threadOpts(msg));
 });
 
 bot.onText(/\/kuniAlia\b/, async (msg) => {
