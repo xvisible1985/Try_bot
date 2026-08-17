@@ -1153,6 +1153,11 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     }
   }
 
+  if (weapon.key === 'crutch') {
+    applyDimon(target.id, msg.chat.id, target.username);
+    await bot.sendMessage(msg.chat.id, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msg)).catch(() => {});
+  }
+
   if (roll >= getCritThreshold(msg.from.id)) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
