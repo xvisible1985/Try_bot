@@ -1,6 +1,6 @@
 # `/kuniFun`, `/kuniAlia`, `/kuniTama` Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add three public self-buff commands (`/kuniFun`, `/kuniAlia`, `/kuniTama`) that temporarily boost the caller's crit and/or dodge chance in `/kick`, each with its own 10-minute duration and matching cooldown.
 
@@ -392,22 +392,22 @@ git push
 
 **Files:** none (verification only, against the running bot — deploy is the user's own GitHub-based flow)
 
-- [ ] **Step 1: Confirm each command casts and announces**
+- [x] **Step 1: Confirm each command casts and announces**
 
 Send `/kuniFun`, `/kuniAlia`, `/kuniTama` (as different users, or the same user with `/kuniAlia`/`/kuniTama` after `/kuniFun`'s own cooldown check only blocks re-casting *itself*). Expected: each replies with its own flavor line naming InternalFun / AliyaKuzAli / Tama and the buff duration.
 
-- [ ] **Step 2: Confirm cooldown blocking**
+- [x] **Step 2: Confirm cooldown blocking**
 
 Immediately re-run the same command a second time. Expected: `<user>, бафф уже активен (ещё N мин).` with `N` close to 10.
 
-- [ ] **Step 3: Confirm stacking**
+- [x] **Step 3: Confirm stacking**
 
 Cast `/kuniFun` then `/kuniAlia` as the same user. Expected: both succeed (different cooldown columns, different slots) — neither blocks the other.
 
-- [ ] **Step 4: Confirm the crit/dodge effect qualitatively**
+- [x] **Step 4: Confirm the crit/dodge effect qualitatively**
 
 While `/kuniFun` is active, run several `/kick`s and note crit/injury messages appear to come up somewhat more often than usual (11% -> ~17%, not reliably visible in a handful of tries, but shouldn't feel absent over ~15-20 attempts). While `/kuniAlia` is active on the *target*, have another user `/kick` them several times and note the "❌ неудачно" outcome appears somewhat more often than the normal ~50/50.
 
-- [ ] **Step 5: Final review commit (if any manual fixes were needed during verification)**
+- [x] **Step 5: Final review commit (if any manual fixes were needed during verification)**
 
 If verification surfaced no code changes, there is nothing to commit here. If it did, commit those fixes individually with a description of what was wrong, following the same commit-message style as the earlier tasks.
