@@ -991,6 +991,21 @@ function applyBleed(userId, chatId) {
   db.prepare('UPDATE user_health SET bleed_until = ?, bleed_chat_id = ? WHERE user_id = ?').run(until, chatId, userId);
 }
 
+// Weapon-triggered timed "old man Dimon" status (see WEAPON_DEFS.crutch).
+// Never downgrades an existing PERMANENT status (dimon_until IS NULL, set
+// by admin /dimon below) to a timed one — a crutch hit can't undo an
+// admin's manual punishment. Write side only; the old-man-speech message
+// hook further down is what actually reads/expires this.
+function applyDimon(userId, chatId, username) {
+  const existing = db.prepare('SELECT dimon_until FROM dimoniacs WHERE user_id = ?').get(userId);
+  if (existing && existing.dimon_until === null) return;
+  const until = Math.floor(Date.now() / 1000) + 2 * 3600;
+  db.prepare(
+    'INSERT INTO dimoniacs (user_id, chat_id, username, message_count, dimon_until) VALUES (?, ?, ?, 0, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET dimon_until = excluded.dimon_until, message_count = 0, chat_id = excluded.chat_id, username = excluded.username'
+  ).run(userId, chatId, username, until);
+}
+
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
 // re-trigger your OWN hiding, not how often you can attack.
 const hideCooldowns = new Map();
@@ -1858,8 +1873,12 @@ bot.on('message', async (msg) => {
   }
 
   // Dimon (старик) — в каждом третьем сообщении добавляем старческие обороты
-  const dimonRow = db.prepare('SELECT message_count FROM dimoniacs WHERE user_id = ?').get(msg.from.id);
-  if (dimonRow && msg.text && !msg.text.startsWith('/') && !msg.text.startsWith('**')) {
+  const dimonRow = db.prepare('SELECT message_count, dimon_until FROM dimoniacs WHERE user_id = ?').get(msg.from.id);
+  if (dimonRow && dimonRow.dimon_until && dimonRow.dimon_until * 1000 < Date.now()) {
+    // Timed status (from a crutch hit) expired — lazily clean up, same
+    // idiom as getUserInjury's injured_until check elsewhere in this file.
+    db.prepare('DELETE FROM dimoniacs WHERE user_id = ?').run(msg.from.id);
+  } else if (dimonRow && msg.text && !msg.text.startsWith('/') && !msg.text.startsWith('**')) {
     const newCount = dimonRow.message_count + 1;
     db.prepare('UPDATE dimoniacs SET message_count = ? WHERE user_id = ?').run(newCount, msg.from.id);
 
