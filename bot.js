@@ -2168,7 +2168,7 @@ bot.on('message_reaction', async (reaction) => {
 });
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
-bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'текст:', msg.text));
+bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'id:', msg.from?.id, 'текст:', msg.text));
 // Health regen — this bot's first background timer (no existing setInterval
 // to mirror; troll-bot's own backgroundTick is the loose stylistic
 // reference: one self-contained function, called on a fixed interval).
