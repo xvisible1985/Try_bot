@@ -1182,11 +1182,19 @@ bot.onText(/\/kuniAlia\b/, async (msg) => {
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
   }
   const until = now + 600;
+  const roll = Math.floor(Math.random() * 101);
+  if (roll < 50) {
+    db.prepare(
+      'INSERT INTO buffs (user_id, alia_cd_until) VALUES (?, ?) ' +
+      'ON CONFLICT(user_id) DO UPDATE SET alia_cd_until = excluded.alia_cd_until'
+    ).run(msg.from.id, until);
+    return bot.sendMessage(msg.chat.id, `${actorLabel} попытался сделать куни AliyaKuzAli, но не вышло 😅 (${roll}/100)`, threadOpts(msg));
+  }
   db.prepare(
     'INSERT INTO buffs (user_id, dodge_mult, dodge_until, alia_cd_until) VALUES (?, 1.5, ?, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET dodge_mult = 1.5, dodge_until = excluded.dodge_until, alia_cd_until = excluded.alia_cd_until'
   ).run(msg.from.id, until, until);
-  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни AliyaKuzAli и теперь лучше уклоняется 🌀 (+уклонение на 10 мин)`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни AliyaKuzAli и теперь лучше уклоняется 🌀 (+уклонение на 10 мин): ${roll}/100`, threadOpts(msg));
 });
 
 bot.onText(/\/kuniTama\b/, async (msg) => {
