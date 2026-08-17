@@ -1206,11 +1206,19 @@ bot.onText(/\/kuniTama\b/, async (msg) => {
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
   }
   const until = now + 600;
+  const roll = Math.floor(Math.random() * 101);
+  if (roll < 50) {
+    db.prepare(
+      'INSERT INTO buffs (user_id, tama_cd_until) VALUES (?, ?) ' +
+      'ON CONFLICT(user_id) DO UPDATE SET tama_cd_until = excluded.tama_cd_until'
+    ).run(msg.from.id, until);
+    return bot.sendMessage(msg.chat.id, `${actorLabel} попытался сделать куни Tama, но не вышло 😅 (${roll}/100)`, threadOpts(msg));
+  }
   db.prepare(
     'INSERT INTO buffs (user_id, crit_mult, crit_until, dodge_mult, dodge_until, tama_cd_until) VALUES (?, 1.25, ?, 1.25, ?, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET crit_mult = 1.25, crit_until = excluded.crit_until, dodge_mult = 1.25, dodge_until = excluded.dodge_until, tama_cd_until = excluded.tama_cd_until'
   ).run(msg.from.id, until, until, until);
-  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни Tama и теперь стал опаснее и увёртливее ✨ (+крит и +уклонение на 10 мин)`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни Tama и теперь стал опаснее и увёртливее ✨ (+крит и +уклонение на 10 мин): ${roll}/100`, threadOpts(msg));
 });
 
 // --- Animal assign/unassign (admin only, reply required) ---
