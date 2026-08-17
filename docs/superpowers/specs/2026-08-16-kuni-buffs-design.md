@@ -67,6 +67,33 @@ including a stronger `/kuniFun`/`/kuniAlia` value, if the caller
 chooses to cast it while one is still running. This is an accepted
 edge case, not worth extra "keep the stronger" logic.
 
+### Success roll (50/50)
+
+After the cooldown check passes (command isn't already on cooldown),
+each command rolls once, same convention as `/kick`:
+`roll = Math.floor(Math.random() * 101)`, success at `roll >= 50`.
+
+**The cooldown is started either way** — on both success and failure,
+the command's own `*_cd_until` is set to `now + 600`. A failed roll
+still "used up" the attempt; there's no free instant retry. This means
+each buff's effective uptime is now roughly half of what it was before
+this change (a cast has to actually succeed to grant 10 minutes of
+buff, and every cast — success or fail — blocks the next attempt for
+10 minutes).
+
+- **On success:** identical to today — the relevant buff column(s) are
+  set, and the flavor message is sent with the roll appended, e.g.
+  `"{actorLabel} сделал куни InternalFun и теперь стал более опасен ⚡
+  (+крит на 10 мин): 68/100"`.
+- **On failure:** the buff columns (`crit_mult`/`crit_until`,
+  `dodge_mult`/`dodge_until`) are **not** touched — only that command's
+  `*_cd_until` is written, via an `INSERT ... ON CONFLICT DO UPDATE SET
+  <cd_column> = excluded.<cd_column>` that omits the mult/until
+  columns entirely (so an existing buff from an earlier successful
+  cast, if still running, is left alone — a failed re-cast can't
+  cancel a buff that's already active). Message: `"{actorLabel}
+  попытался сделать куни InternalFun, но не вышло 😅 (30/100)"`.
+
 ### Commands
 
 Placed together as a new block, after the existing `/kick` handler and
@@ -83,24 +110,36 @@ bot.onText(/\/kuniFun\b/, async (msg) => {
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
   }
   const until = now + 600;
+  const roll = Math.floor(Math.random() * 101);
+  if (roll < 50) {
+    db.prepare(
+      'INSERT INTO buffs (user_id, fun_cd_until) VALUES (?, ?) ' +
+      'ON CONFLICT(user_id) DO UPDATE SET fun_cd_until = excluded.fun_cd_until'
+    ).run(msg.from.id, until);
+    return bot.sendMessage(msg.chat.id, `${actorLabel} попытался сделать куни InternalFun, но не вышло 😅 (${roll}/100)`, threadOpts(msg));
+  }
   db.prepare(
     'INSERT INTO buffs (user_id, crit_mult, crit_until, fun_cd_until) VALUES (?, 1.5, ?, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET crit_mult = 1.5, crit_until = excluded.crit_until, fun_cd_until = excluded.fun_cd_until'
   ).run(msg.from.id, until, until);
-  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни InternalFun и теперь стал более опасен ⚡ (+крит на 10 мин)`, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, `${actorLabel} сделал куни InternalFun и теперь стал более опасен ⚡ (+крит на 10 мин): ${roll}/100`, threadOpts(msg));
 });
 ```
 
 `/kuniAlia` is the same shape (own cooldown check with the same
-"ещё N мин" wording), writing `dodge_mult = 1.5, dodge_until`,
-`alia_cd_until`, message `"{actorLabel} сделал куни AliyaKuzAli и
-теперь лучше уклоняется 🌀 (+уклонение на 10 мин)"`.
+"ещё N мин" wording, own roll), writing `dodge_mult = 1.5, dodge_until`,
+`alia_cd_until` on success. Success message: `"{actorLabel} сделал
+куни AliyaKuzAli и теперь лучше уклоняется 🌀 (+уклонение на 10 мин):
+{roll}/100"`. Failure message: `"{actorLabel} попытался сделать куни
+AliyaKuzAli, но не вышло 😅 ({roll}/100)"` (only `alia_cd_until` written).
 
 `/kuniTama` writes all four buff columns (`crit_mult = 1.25`,
-`dodge_mult = 1.25`, both `_until`, and `tama_cd_until`), same
-cooldown-check shape against `tama_cd_until`, message
-`"{actorLabel} сделал куни Tama и теперь стал опаснее и увёртливее ✨
-(+крит и +уклонение на 10 мин)"`.
+`dodge_mult = 1.25`, both `_until`, and `tama_cd_until`) on success,
+same cooldown-check and roll shape. Success message: `"{actorLabel}
+сделал куни Tama и теперь стал опаснее и увёртливее ✨ (+крит и
++уклонение на 10 мин): {roll}/100"`. Failure message: `"{actorLabel}
+попытался сделать куни Tama, но не вышло 😅 ({roll}/100)"` (only
+`tama_cd_until` written).
 
 ### `/kick` roll resolution
 
@@ -157,9 +196,12 @@ since `/kick` only ever rolls once per attack.)
 ## Testing
 
 Manual only, matching this file's convention: `node --check bot.js`,
-then live smoke test — cast each command and confirm the flavor
-message and cooldown reply; use `/kick` while buffed and confirm the
-win/crit rates look elevated over enough rolls (or temporarily lower
-the thresholds in a local scratch script to confirm the comparison
-logic in isolation, same as the scissors/heal plans did for their own
-DB logic).
+then live smoke test — cast each command enough times to see both a
+success and a failure, confirm the right message/roll appears in each
+case, confirm a failure still starts the 10-minute cooldown (immediate
+re-cast is blocked) and doesn't touch an already-active buff from an
+earlier success, and confirm a success still applies the buff and lets
+`/kick` show elevated win/crit rates as before. The isolated-DB-logic
+scratch scripts from the original plan remain valid for the
+unconditional parts (threshold lookup, stacking) since this change
+only adds a branch before the existing insert, not new tables/columns.
