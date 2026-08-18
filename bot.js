@@ -913,10 +913,18 @@ function isHidden(userId) {
 }
 
 // UPDATE...RETURNING keeps the floor-then-read atomic against the regen
-// tick's own concurrent writes (see healthRegenTick below).
+// tick's own concurrent writes (see healthRegenTick below). Also stamps
+// last_regen_at = now: healthRegenTick only updates that column while
+// health < max_health, so a player who reaches max_health and stays there
+// for a long stretch has a frozen, increasingly stale last_regen_at — the
+// next hit would otherwise make the following tick see a huge elapsed
+// time and instantly refill them via its MIN(max_health, ...) clamp.
+// Resetting the clock on every hit keeps the elapsed-time math bounded to
+// "time since last damage" instead of "time since last regen gain".
 function damageHuman(userId, chatId, username, damage) {
   getUserHealth(userId);
-  const row = db.prepare('UPDATE user_health SET health = MAX(0, health - ?) WHERE user_id = ? RETURNING health').get(damage, userId);
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('UPDATE user_health SET health = MAX(0, health - ?), last_regen_at = ? WHERE user_id = ? RETURNING health').get(damage, now, userId);
   if (row.health === 0) {
     muteUser(userId, chatId, username, 0, 'драка', 30 * 60 * 1000);
   }
