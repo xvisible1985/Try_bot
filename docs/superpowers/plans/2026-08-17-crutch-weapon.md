@@ -19,7 +19,7 @@
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:326-328` (weapon_ownership seed rows)
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:826-830` (WEAPON_DEFS)
 
-- [ ] **Step 1: Add the `dimon_until` column**
+- [x] **Step 1: Add the `dimon_until` column**
 
 Find:
 
@@ -61,7 +61,7 @@ try {
 } catch {}
 ```
 
-- [ ] **Step 2: Add the crutch weapon_ownership seed row**
+- [x] **Step 2: Add the crutch weapon_ownership seed row**
 
 Find:
 
@@ -84,7 +84,7 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 ```
 
-- [ ] **Step 3: Add the crutch WEAPON_DEFS entry**
+- [x] **Step 3: Add the crutch WEAPON_DEFS entry**
 
 Find:
 
@@ -107,12 +107,12 @@ const WEAPON_DEFS = {
 };
 ```
 
-- [ ] **Step 4: Verify with a syntax check**
+- [x] **Step 4: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bot.js
@@ -128,7 +128,7 @@ git push
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:975-978` (right after `applyBleed`)
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1846-1849` (old-man-speech message hook)
 
-- [ ] **Step 1: Add the `applyDimon` helper right after `applyBleed`**
+- [x] **Step 1: Add the `applyDimon` helper right after `applyBleed`**
 
 Find:
 
@@ -163,7 +163,7 @@ function applyDimon(userId, chatId, username) {
 }
 ```
 
-- [ ] **Step 2: Add the lazy expiry check to the old-man-speech message hook**
+- [x] **Step 2: Add the lazy expiry check to the old-man-speech message hook**
 
 Find:
 
@@ -227,12 +227,12 @@ Replace with:
   }
 ```
 
-- [ ] **Step 3: Verify with a syntax check**
+- [x] **Step 3: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 4: Verify `applyDimon` and the expiry check in isolation**
+- [x] **Step 4: Verify `applyDimon` and the expiry check in isolation**
 
 ```bash
 node -e "
@@ -283,7 +283,7 @@ message_count reset on re-hit: 0 expected 0
 expired timed status detected: true expected true
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bot.js
@@ -298,7 +298,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1119-1125` (right after the existing scissors block in `/kick`)
 
-- [ ] **Step 1: Add the crutch block right after the scissors block**
+- [x] **Step 1: Add the crutch block right after the scissors block**
 
 Find:
 
@@ -329,12 +329,12 @@ Replace with:
   }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
@@ -350,7 +350,7 @@ git push
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:98-101` (weapon_ownership seed rows, inside the startup `try` block)
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:112-116` (WEAPON_DEFS)
 
-- [ ] **Step 1: Add the crutch weapon_ownership seed row**
+- [x] **Step 1: Add the crutch weapon_ownership seed row**
 
 Find:
 
@@ -373,7 +373,7 @@ Replace with:
 } catch (err) {
 ```
 
-- [ ] **Step 2: Add the crutch WEAPON_DEFS entry**
+- [x] **Step 2: Add the crutch WEAPON_DEFS entry**
 
 Find:
 
@@ -396,12 +396,12 @@ const WEAPON_DEFS = {
 };
 ```
 
-- [ ] **Step 3: Verify with a syntax check**
+- [x] **Step 3: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -416,7 +416,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:251-255` (right after `applyBleed`)
 
-- [ ] **Step 1: Add the `applyDimon` wrapper right after `applyBleed`**
+- [x] **Step 1: Add the `applyDimon` wrapper right after `applyBleed`**
 
 Find:
 
@@ -454,12 +454,12 @@ function applyDimon(userId, chatId, username) {
 }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify `applyDimon`'s permanent-vs-timed branching in isolation**
+- [x] **Step 3: Verify `applyDimon`'s permanent-vs-timed branching in isolation**
 
 ```bash
 node -e "
@@ -496,7 +496,7 @@ permanent status preserved (troll-triggered): true expected true
 
 (This mirrors Task 2's own verification of the same logic, since `applyDimon`'s branching is identical between the two repos — the only difference is the `if (!tgBotDb) return;` guard and `tgBotDb.prepare` vs `db.prepare`, neither of which changes the branching behavior being tested here.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -511,7 +511,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2165-2175` (inside `performFight`)
 
-- [ ] **Step 1: Add the crutch block right after the scissors block**
+- [x] **Step 1: Add the crutch block right after the scissors block**
 
 Find:
 
@@ -549,12 +549,12 @@ Replace with:
     }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
@@ -569,7 +569,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2368-2378` (inside `performDrink`, inside its 3-swing `for` loop)
 
-- [ ] **Step 1: Add the crutch block right after the scissors block**
+- [x] **Step 1: Add the crutch block right after the scissors block**
 
 Find:
 
@@ -607,12 +607,12 @@ Replace with:
       }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
@@ -627,7 +627,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2699-2707` (inside `triggerDrunkAttack`)
 
-- [ ] **Step 1: Add the crutch block right after the scissors block**
+- [x] **Step 1: Add the crutch block right after the scissors block**
 
 `triggerDrunkAttack` and `triggerFasAttack` (Task 9) have byte-identical scissors blocks — use the unique `logAction(target.userId, target.username || target.firstName, 'drunk_attack')` line earlier in this same function to confirm you're editing the right one before applying this Find/Replace (that exact string, `'drunk_attack'`, only appears in this function).
 
@@ -671,17 +671,17 @@ Replace with:
     const healHours = applyInjury(target.userId, injuryType);
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify only `triggerDrunkAttack` was touched, not `triggerFasAttack`**
+- [x] **Step 3: Verify only `triggerDrunkAttack` was touched, not `triggerFasAttack`**
 
 Run: `grep -n "weapon.key === 'crutch'" bot.js`
 Expected: exactly ONE match so far (this task's), inside `triggerDrunkAttack`. (Task 9 will add the second.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -696,7 +696,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2776-2784` (inside `triggerFasAttack`)
 
-- [ ] **Step 1: Add the crutch block right after the scissors block**
+- [x] **Step 1: Add the crutch block right after the scissors block**
 
 This is the SECOND occurrence of the byte-identical 13-line sequence described in Task 8 — confirm you're editing the occurrence preceded earlier in its function by `logAction(target.userId, target.username || target.firstName, 'fas_attack')` (not `'drunk_attack'`, which is Task 8's and should already show a crutch block from the previous task).
 
@@ -738,17 +738,17 @@ Replace with:
     const healHours = applyInjury(target.userId, injuryType);
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify both call sites now have the crutch block**
+- [x] **Step 3: Verify both call sites now have the crutch block**
 
 Run: `grep -n "weapon.key === 'crutch'" bot.js`
 Expected: exactly TWO matches now (Task 8's in `triggerDrunkAttack`, this task's in `triggerFasAttack`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -763,7 +763,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2913-2921` (inside `triggerFoodSteal`, inside its `for` loop)
 
-- [ ] **Step 1: Add the crutch block right after the scissors block**
+- [x] **Step 1: Add the crutch block right after the scissors block**
 
 Find:
 
@@ -803,17 +803,17 @@ Replace with:
       const healHours = applyInjury(target.userId, injuryType);
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify all 5 troll-bot call sites now have the crutch block**
+- [x] **Step 3: Verify all 5 troll-bot call sites now have the crutch block**
 
 Run: `grep -n "weapon.key === 'crutch'\|trollWeapon.key === 'crutch'" bot.js`
 Expected: exactly FIVE matches now (`performFight`, `performDrink`, `triggerDrunkAttack`, `triggerFasAttack`, `triggerFoodSteal`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
