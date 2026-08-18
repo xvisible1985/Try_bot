@@ -1154,7 +1154,7 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   }
 
   if (weapon.key === 'crutch') {
-    applyDimon(target.id, msg.chat.id, target.username);
+    applyDimon(target.id, msg.chat.id, target.username || target.firstName);
     await bot.sendMessage(msg.chat.id, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msg)).catch(() => {});
   }
 
