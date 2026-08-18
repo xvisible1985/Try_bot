@@ -19,7 +19,7 @@
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js` — weapon_ownership seed rows (same caveat — locate by content)
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1127-1145` — `/kick`'s crit branch
 
-- [ ] **Step 1: Add the horns WEAPON_DEFS entry**
+- [x] **Step 1: Add the horns WEAPON_DEFS entry**
 
 Read the current `WEAPON_DEFS` block in bot.js first — it will look like ONE of these two, depending on whether the crutch-weapon plan has already been executed in this session:
 
@@ -69,7 +69,7 @@ const WEAPON_DEFS = {
 
 Either way, the end state must have all previously-existing entries plus a new `horns: { name: 'рога', instrumental: 'рогами', accusative: 'рога', multiplier: 2, emoji: '🐂' },` line.
 
-- [ ] **Step 2: Add the horns weapon_ownership seed row**
+- [x] **Step 2: Add the horns weapon_ownership seed row**
 
 Same two-variant situation — find whichever seed-row block currently exists (three lines ending in `...scissors...` only, or four lines ending in `...crutch...`) and add ONE new line after the last existing line:
 
@@ -79,7 +79,7 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 
 (Unlike `crutch`, this uses the normal username-based lazy resolution — `Tamasvi_Vamp` has a public `@username`, so `owner_user_id`/`owner_username` start `NULL` and get filled in automatically the next time she sends a message, via the existing generic resolution `UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_type = 'human' AND owner_user_id IS NULL` already in this file — no new code needed for that part.)
 
-- [ ] **Step 3: Add the horns flavor line to `/kick`'s crit branch**
+- [x] **Step 3: Add the horns flavor line to `/kick`'s crit branch**
 
 Find:
 
@@ -116,12 +116,12 @@ Replace with:
 
 (If the crutch-weapon plan already added its own block somewhere in this handler, it lives elsewhere — right after the earlier `scissors` block, which is a completely separate branch from this crit branch — so it does not interfere with this Find/Replace.)
 
-- [ ] **Step 4: Verify with a syntax check**
+- [x] **Step 4: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bot.js
@@ -137,7 +137,7 @@ git push
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js` — weapon_ownership seed block inside the startup `try` (locate by content — three or four existing `tgBotDb.prepare("INSERT OR IGNORE INTO weapon_ownership...` lines depending on whether the crutch plan already landed)
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js` — `WEAPON_DEFS` (same two-variant situation as tg-bot's Task 1 Step 1 above)
 
-- [ ] **Step 1: Add the horns weapon_ownership seed row**
+- [x] **Step 1: Add the horns weapon_ownership seed row**
 
 Find the existing block (three or four lines) ending in:
 
@@ -151,7 +151,7 @@ and insert, right before that `} catch (err) {` line:
   tgBotDb.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
 ```
 
-- [ ] **Step 2: Add the horns WEAPON_DEFS entry**
+- [x] **Step 2: Add the horns WEAPON_DEFS entry**
 
 Same two-variant Find/Replace as tg-bot's Task 1 Step 1 (identical block, this repo just uses `const WEAPON_DEFS = {` at its own location) — add:
 
@@ -161,12 +161,12 @@ Same two-variant Find/Replace as tg-bot's Task 1 Step 1 (identical block, this r
 
 as the last entry.
 
-- [ ] **Step 3: Verify with a syntax check**
+- [x] **Step 3: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -181,7 +181,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2176-2185` (inside `performFight`, the `trollSwing.roll >= 90` crit branch)
 
-- [ ] **Step 1: Add the horns flavor line to the crit branch**
+- [x] **Step 1: Add the horns flavor line to the crit branch**
 
 In this call site the troll is the attacker and the human (`from`) is the victim of the troll's counter-swing (`trollWeapon` is what the TROLL is holding). The flavor line attributes the action to the troll ("Тролль насадил"), same as the existing weapon-steal message a few lines below already does for the troll's own actions ("Тролль отобрал...") rather than reusing a human-specific verb form.
 
@@ -208,12 +208,12 @@ Replace with:
       const stolenKey = maybeStealWeapon(from.id, { type: 'troll' });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
@@ -228,7 +228,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2379-2388` (inside `performDrink`, the `critRoll >= 90` crit branch, inside its 3-swing `for` loop)
 
-- [ ] **Step 1: Add the horns flavor line to the crit branch**
+- [x] **Step 1: Add the horns flavor line to the crit branch**
 
 Note: in this loop, the weapon variable is `weapon` (re-picked each iteration), and the human being hit is `from` (the troll is the attacker, same attacker/victim relationship as `performFight` — this is the troll counter-attacking the human who challenged it to drink). Same naming fix as Task 3 applies: the flavor line should say "Тролль насадил", not attribute the action to `from` (the victim).
 
@@ -257,12 +257,12 @@ Replace with:
         const stolenKey = maybeStealWeapon(from.id, { type: 'troll' });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
@@ -279,7 +279,7 @@ git push
 
 Note: here the TROLL is the attacker and `target`/`name` is the human victim (opposite relationship from Tasks 3-4, where the troll counter-attacked the challenger) — so this message correctly attributes the action to the troll, same "Тролль ..." phrasing as the existing weapon-steal line a few lines below in this same block, hitting `name` (the victim).
 
-- [ ] **Step 1: Add the horns flavor line to the crit branch**
+- [x] **Step 1: Add the horns flavor line to the crit branch**
 
 `triggerDrunkAttack` and `triggerFasAttack` (Task 6) have a BYTE-IDENTICAL crit block at two different locations in this file. Before applying this Find/Replace, confirm you're in `triggerDrunkAttack` by finding the unique anchor line `logAction(target.userId, target.username || target.firstName, 'drunk_attack');` earlier in the same function (that exact string, `'drunk_attack'`, only appears in this function) — the Find block below should be the occurrence that comes after that anchor line, not the other (`'fas_attack'`-anchored) occurrence.
 
@@ -326,17 +326,17 @@ Replace with:
 // Tiered category names [mild, medium, mean] — indexed the same way as getMischiefTier.
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify only `triggerDrunkAttack` was touched, not `triggerFasAttack`**
+- [x] **Step 3: Verify only `triggerDrunkAttack` was touched, not `triggerFasAttack`**
 
 Run: `grep -n "weapon.key === 'horns'" bot.js`
 Expected: exactly ONE match so far, inside `triggerDrunkAttack`. (Task 6 will add the second.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -351,7 +351,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2785-2795` (inside `triggerFasAttack`, the `swing.roll >= 90` crit branch)
 
-- [ ] **Step 1: Add the horns flavor line to the crit branch**
+- [x] **Step 1: Add the horns flavor line to the crit branch**
 
 This is the SECOND occurrence of the byte-identical crit block described in Task 5. Confirm you're editing the occurrence preceded earlier in its function by `logAction(target.userId, target.username || target.firstName, 'fas_attack');` (not `'drunk_attack'`, which is Task 5's and should already show a horns block from the previous task).
 
@@ -398,17 +398,17 @@ Replace with:
 function triggerMischief(chatId) {
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify both call sites now have the horns block**
+- [x] **Step 3: Verify both call sites now have the horns block**
 
 Run: `grep -n "weapon.key === 'horns'" bot.js`
 Expected: exactly TWO matches now (Task 5's in `triggerDrunkAttack`, this task's in `triggerFasAttack`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -423,7 +423,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\troll-bot\bot.js:2922-2932` (inside `triggerFoodSteal`, the `swing.roll >= 90` crit branch, inside its `for` loop)
 
-- [ ] **Step 1: Add the horns flavor line to the crit branch**
+- [x] **Step 1: Add the horns flavor line to the crit branch**
 
 Find:
 
@@ -460,17 +460,17 @@ Replace with:
     }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify all 5 troll-bot call sites now have the horns block**
+- [x] **Step 3: Verify all 5 troll-bot call sites now have the horns block**
 
 Run: `grep -n "weapon.key === 'horns'\|trollWeapon.key === 'horns'" bot.js`
 Expected: exactly FIVE matches now (`performFight`, `performDrink`, `triggerDrunkAttack`, `triggerFasAttack`, `triggerFoodSteal`).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
