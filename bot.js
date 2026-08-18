@@ -121,11 +121,18 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
-// Migrate existing pigs to animals table
+// Migrate existing pigs to animals table. Clears the source rows once
+// migrated so this is a genuine one-time migration, not a resurrection
+// script: without the DELETE, this runs unconditionally on every boot,
+// so any user removed from `animals` (e.g. via /unpig) whose legacy
+// `pigs` row was never touched would get silently re-inserted as a pig
+// on the very next deploy — /unpig and /human only ever DELETE FROM
+// animals, they never knew about this older table.
 db.exec(`
   INSERT OR IGNORE INTO animals (user_id, chat_id, username, animal, added_by, added_by_name, created_at)
   SELECT user_id, chat_id, username, 'pig', added_by, added_by_name, created_at FROM pigs
 `);
+db.exec('DELETE FROM pigs');
 db.exec(`
   CREATE TABLE IF NOT EXISTS fishers (
     user_id INTEGER PRIMARY KEY,
