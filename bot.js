@@ -121,6 +121,14 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
+// Weapon-triggered timed animal status (see WEAPON_DEFS.carrot and
+// applyTimedAnimal below) — NULL means the existing PERMANENT status
+// set by /pig, /cat, /fox etc. (unchanged), a timestamp means a timed
+// status from a carrot hit that auto-expires. Same idiom as crutch's
+// dimon_until column.
+try {
+  db.exec('ALTER TABLE animals ADD COLUMN animal_until INTEGER');
+} catch {}
 // Migrate existing pigs to animals table. Clears the source rows once
 // migrated so this is a genuine one-time migration, not a resurrection
 // script: without the DELETE, this runs unconditionally on every boot,
@@ -341,6 +349,7 @@ db.exec(`
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'ANOKI5', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('scissors', 'AliyaKuzAli', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('carrot', 'MashaZaykaaa', 'human', NULL, NULL)").run();
 // Дима has no public Telegram @username, so the usual seed_username lazy
 // resolution (see the UPDATE ... WHERE seed_username = ? AND owner_user_id
 // IS NULL below) can't apply to him — his numeric id is already known, so
@@ -850,6 +859,7 @@ const WEAPON_DEFS = {
   scissors: { name: 'ножницы', instrumental: 'ножницами', accusative: 'ножницы', multiplier: 1.25, emoji: '✂️' },
   crutch: { name: 'костыль', instrumental: 'костылём', accusative: 'костыль', multiplier: 1.25, emoji: '🩼' },
   horns: { name: 'рога', instrumental: 'рогами', accusative: 'рога', multiplier: 2, emoji: '🐂' },
+  carrot: { name: 'морковка', instrumental: 'морковкой', accusative: 'морковку', emoji: '🥕' },
 };
 
 function getUserInjury(userId) {
