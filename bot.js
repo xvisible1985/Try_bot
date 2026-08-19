@@ -1033,6 +1033,21 @@ function applyDimon(userId, chatId, username) {
   ).run(userId, chatId, username, until);
 }
 
+// Weapon-triggered timed animal status (see WEAPON_DEFS.carrot). Never
+// downgrades an existing PERMANENT status (animal_until IS NULL, set
+// by /pig, /cat, /fox etc.) to a timed one — same "never downgrade
+// permanent" guarantee as applyDimon above, for the same reason (a
+// weapon hit can't undo an admin's manual assignment).
+function applyTimedAnimal(userId, chatId, username, animalType) {
+  const existing = db.prepare('SELECT animal_until FROM animals WHERE user_id = ?').get(userId);
+  if (existing && existing.animal_until === null) return;
+  const until = Math.floor(Date.now() / 1000) + 20 * 60;
+  db.prepare(
+    'INSERT INTO animals (user_id, chat_id, username, animal, animal_until) VALUES (?, ?, ?, ?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET animal = excluded.animal, animal_until = excluded.animal_until, chat_id = excluded.chat_id, username = excluded.username'
+  ).run(userId, chatId, username, animalType, until);
+}
+
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
 // re-trigger your OWN hiding, not how often you can attack.
 const hideCooldowns = new Map();
@@ -2072,7 +2087,11 @@ bot.on('message', async (msg) => {
       const { replaced } = filterProfanity(stickerText, '');
       if (replaced) {
         const nick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-        const aRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
+        let aRow = db.prepare('SELECT animal, animal_until FROM animals WHERE user_id = ?').get(msg.from.id);
+        if (aRow && aRow.animal_until && aRow.animal_until * 1000 < Date.now()) {
+          db.prepare('DELETE FROM animals WHERE user_id = ?').run(msg.from.id);
+          aRow = null;
+        }
         const eRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
         const pRow = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(msg.from.id);
         bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
@@ -2096,7 +2115,11 @@ bot.on('message', async (msg) => {
 
   const estetRow = db.prepare('SELECT 1 FROM estets WHERE user_id = ?').get(msg.from.id);
   const podhalimRow = db.prepare('SELECT 1 FROM podhalims WHERE user_id = ?').get(msg.from.id);
-  const animalRow = db.prepare('SELECT animal FROM animals WHERE user_id = ?').get(msg.from.id);
+  let animalRow = db.prepare('SELECT animal, animal_until FROM animals WHERE user_id = ?').get(msg.from.id);
+  if (animalRow && animalRow.animal_until && animalRow.animal_until * 1000 < Date.now()) {
+    db.prepare('DELETE FROM animals WHERE user_id = ?').run(msg.from.id);
+    animalRow = null;
+  }
   const ramzan = db.prepare('SELECT 1 FROM ramzans WHERE user_id = ?').get(msg.from.id);
 
   if ((estetRow || podhalimRow || animalRow || ramzan) && msg.text) {
