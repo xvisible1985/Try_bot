@@ -1197,6 +1197,34 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
       ).catch(() => {});
     }
   }
+
+  // Knockout weapon-steal offer — additive to the silent 5% crit-steal
+  // above, not a replacement (see docs/superpowers/specs/
+  // 2026-08-19-knockout-steal-buttons-design.md). Looked up live rather
+  // than from a value cached earlier in this handler: if the crit
+  // block's own maybeStealWeapon just moved the weapon to msg.from.id,
+  // this SELECT correctly finds nothing left on target.id, so no
+  // redundant "steal the weapon you already just got" offer appears.
+  if (targetHealthAfter === 0) {
+    const heldWeapon = db.prepare(
+      "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?"
+    ).get(target.id);
+    if (heldWeapon) {
+      const def = WEAPON_DEFS[heldWeapon.weapon_key];
+      await bot.sendMessage(
+        msg.chat.id,
+        `${targetLabel} в отключке — с ним ${def.accusative}. Забрать?`,
+        threadOpts(msg, {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '🗡 Отобрать оружие', callback_data: `steal_yes:${msg.from.id}:${target.id}` },
+              { text: '🤝 Оставить', callback_data: `steal_no:${msg.from.id}` },
+            ]],
+          },
+        })
+      ).catch(() => {});
+    }
+  }
 });
 
 // --- /kuniFun, /kuniAlia, /kuniTama: public self-buffs, no reply/target
