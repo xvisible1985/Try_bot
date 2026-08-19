@@ -1077,7 +1077,11 @@ bot.onText(/\/me\b/, (msg) => {
 
   for (const row of getWeaponsFor('human', msg.from.id)) {
     const def = WEAPON_DEFS[row.weapon_key];
-    lines.push(`${def.emoji} Ты держишь ${def.name}: урон ×${def.multiplier}`);
+    if (row.weapon_key === 'carrot') {
+      lines.push(`${def.emoji} Ты держишь ${def.name}: случайное место попадания, от лечения до мгновенного нокаута`);
+    } else {
+      lines.push(`${def.emoji} Ты держишь ${def.name}: урон ×${def.multiplier}`);
+    }
   }
 
   const healthRow = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(msg.from.id);
