@@ -655,7 +655,7 @@ let offset = undefined;
 async function skipOldUpdates() {
   try {
     const updates = await Promise.race([
-      bot.getUpdates({ offset: -1, limit: 1, timeout: 0, allowed_updates: ['message', 'message_reaction'] }),
+      bot.getUpdates({ offset: -1, limit: 1, timeout: 0, allowed_updates: ['message', 'message_reaction', 'callback_query'] }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
     ]);
     if (updates.length > 0) offset = updates[updates.length - 1].update_id + 1;
@@ -664,7 +664,7 @@ async function skipOldUpdates() {
 
 async function poll() {
   try {
-    const params = { timeout: 0, limit: 10, allowed_updates: ['message', 'message_reaction'] };
+    const params = { timeout: 0, limit: 10, allowed_updates: ['message', 'message_reaction', 'callback_query'] };
     if (offset !== undefined) params.offset = offset;
     const updates = await Promise.race([
       bot.getUpdates(params),
