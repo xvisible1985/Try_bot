@@ -1178,14 +1178,52 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   if (!success) return;
 
   const targetHealthBefore = getUserHealth(target.id);
-  const rawDmg = Math.floor(Math.random() * 20) + 1;
-  const dmg = Math.round(rawDmg * weapon.multiplier);
-  const targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
-  await bot.sendMessage(
-    msg.chat.id,
-    `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
-    threadOpts(msg)
-  ).catch(() => {});
+  let targetHealthAfter;
+  let hole = null;
+
+  if (weapon.key === 'carrot') {
+    const holes = ['ear', 'nose', 'mouth', 'dick', 'ass'];
+    hole = holes[Math.floor(Math.random() * holes.length)];
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+
+    if (hole === 'ear') {
+      const dmg = Math.round(rawDmg * 0.8);
+      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
+      await bot.sendMessage(msg.chat.id, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msg)).catch(() => {});
+    } else if (hole === 'nose') {
+      const dmg = Math.round(rawDmg * 0.9);
+      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
+      await bot.sendMessage(msg.chat.id, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msg)).catch(() => {});
+    } else if (hole === 'mouth') {
+      const dmg = Math.round(rawDmg * 0.5);
+      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
+      await bot.sendMessage(msg.chat.id, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msg)).catch(() => {});
+    } else if (hole === 'dick') {
+      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
+      const healed = targetHealthAfter - targetHealthBefore.health;
+      db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      await bot.sendMessage(msg.chat.id, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает +${healed} здоровья и оргазм (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msg)).catch(() => {});
+    } else {
+      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, targetHealthBefore.health);
+      await bot.sendMessage(msg.chat.id, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msg)).catch(() => {});
+    }
+
+    const animalType = Math.random() < 0.5 ? 'cat' : 'fox';
+    applyTimedAnimal(target.id, msg.chat.id, target.username || target.firstName, animalType);
+    const animalMsg = animalType === 'cat'
+      ? `🐱 ${targetLabel} на 20 минут теперь мяукает как кошка!`
+      : `🦊 ${targetLabel} на 20 минут теперь рычит как лиса!`;
+    await bot.sendMessage(msg.chat.id, animalMsg, threadOpts(msg)).catch(() => {});
+  } else {
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+    const dmg = Math.round(rawDmg * weapon.multiplier);
+    targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
+    await bot.sendMessage(
+      msg.chat.id,
+      `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
+      threadOpts(msg)
+    ).catch(() => {});
+  }
 
   if (weapon.key === 'scissors') {
     applyBleed(target.id, msg.chat.id);
@@ -1200,7 +1238,7 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     await bot.sendMessage(msg.chat.id, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msg)).catch(() => {});
   }
 
-  if (roll >= getCritThreshold(msg.from.id)) {
+  if (roll >= getCritThreshold(msg.from.id) && !(weapon.key === 'carrot' && hole === 'ass')) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
     const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
