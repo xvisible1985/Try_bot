@@ -2255,6 +2255,54 @@ bot.on('message_reaction', async (reaction) => {
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
 bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'id:', msg.from?.id, 'текст:', msg.text));
+
+// Knockout weapon-steal buttons (see docs/superpowers/specs/2026-08-19-
+// knockout-steal-buttons-design.md and the /kick handler above, which
+// sends the offer this responds to). callback_data never carries the
+// weapon key — ownership is re-read live at click time, same principle
+// as the offer itself, so a delayed click on a weapon someone else
+// already took correctly reports "already gone" instead of stealing a
+// stale snapshot.
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
+
+  const [action, attackerIdStr, victimIdStr] = data.split(':');
+  const attackerId = Number(attackerIdStr);
+  if (query.from.id !== attackerId) {
+    return bot.answerCallbackQuery(query.id, { text: 'Это не твой трофей', show_alert: true }).catch(() => {});
+  }
+
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
+  // reply_markup must be passed explicitly (even empty) — editMessageText
+  // otherwise keeps the original keyboard, which would leave the buttons
+  // clickable again after this resolves.
+  const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
+
+  if (action === 'steal_no') {
+    await bot.editMessageText('Оружие оставлено — трофей не забран.', editOpts).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  const victimId = Number(victimIdStr);
+  const row = db.prepare(
+    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?"
+  ).get(victimId);
+  if (!row) {
+    await bot.editMessageText('Оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  const def = WEAPON_DEFS[row.weapon_key];
+  db.prepare(
+    "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?"
+  ).run(query.from.id, query.from.username, row.weapon_key);
+  const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+  await bot.editMessageText(`${def.emoji} ${actorLabel} обыскал(а) отключившегося и забрал(а) ${def.accusative}!`, editOpts).catch(() => {});
+  bot.answerCallbackQuery(query.id).catch(() => {});
+});
+
 // Health regen — this bot's first background timer (no existing setInterval
 // to mirror; troll-bot's own backgroundTick is the loose stylistic
 // reference: one self-contained function, called on a fixed interval).
