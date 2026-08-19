@@ -1052,7 +1052,6 @@ function applyTimedAnimal(userId, chatId, username, animalType) {
 // re-trigger your OWN hiding, not how often you can attack.
 const hideCooldowns = new Map();
 const HIDE_COOLDOWN_MS = 20 * 60 * 1000;
-const HIDE_DURATION_MS = 60 * 60 * 1000;
 
 bot.onText(/\/me\b/, (msg) => {
   const health = getUserHealth(msg.from.id);
@@ -1092,7 +1091,14 @@ bot.onText(/\/me\b/, (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
-bot.onText(/\/hide\b/, (msg) => {
+bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const hours = match[1] ? parseInt(match[1], 10) : 1;
+  if (hours < 1) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, укажи хотя бы 1 час: /hide 1`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
   const last = hideCooldowns.get(msg.from.id);
   const elapsed = last ? Date.now() - last : Infinity;
   if (elapsed < HIDE_COOLDOWN_MS) {
@@ -1100,12 +1106,21 @@ bot.onText(/\/hide\b/, (msg) => {
     bot.sendMessage(msg.chat.id, `Можно прятаться не чаще раза в 20 минут — подожди ещё ${remaining} мин.`, threadOpts(msg)).catch(() => {});
     return;
   }
-  hideCooldowns.set(msg.from.id, Date.now());
+
   getUserHealth(msg.from.id);
-  const hiddenUntil = Math.floor((Date.now() + HIDE_DURATION_MS) / 1000);
+  const energyRow = db.prepare(
+    'UPDATE user_health SET energy = energy - ? WHERE user_id = ? AND energy >= ? RETURNING energy'
+  ).get(hours, msg.from.id, hours);
+  if (!energyRow) {
+    const current = getUserHealth(msg.from.id).energy;
+    bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии прятаться ${hours} ч — нужно ${hours}, есть ${current}.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  hideCooldowns.set(msg.from.id, Date.now());
+  const hiddenUntil = Math.floor((Date.now() + hours * 60 * 60 * 1000) / 1000);
   db.prepare('UPDATE user_health SET hidden_until = ? WHERE user_id = ?').run(hiddenUntil, msg.from.id);
-  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-  bot.sendMessage(msg.chat.id, `🫥 ${actorLabel} спрятался от драк на час.`, threadOpts(msg)).catch(() => {});
+  bot.sendMessage(msg.chat.id, `🫥 ${actorLabel} спрятался от драк на ${hours} ч.`, threadOpts(msg)).catch(() => {});
 });
 
 // Target resolution: reply-to-message first, else a best-effort
@@ -1167,6 +1182,10 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     return;
   }
 
+  if (isHidden(msg.from.id)) {
+    db.prepare('UPDATE user_health SET hidden_until = NULL WHERE user_id = ?').run(msg.from.id);
+    await bot.sendMessage(msg.chat.id, `🫥 ${actorLabel} перестал прятаться, чтобы напасть!`, threadOpts(msg)).catch(() => {});
+  }
   consumeEnergy(msg.from.id);
 
   const weapon = pickWeaponForAttacker('human', msg.from.id, PVP_WEAPONS);
@@ -2232,7 +2251,7 @@ bot.onText(/\/help\b/, (msg) => {
     'PvP:',
     '/me — здоровье, энергия, травма и укрытие',
     '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить; тратит 1 энергию из 10, восстановление — 1 за 20 мин)',
-    '/hide — спрятаться от /kick на час (сама команда — раз в 20 минут)',
+    '/hide [часы] — спрятаться от /kick на N часов (по умолчанию 1); тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
