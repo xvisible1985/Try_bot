@@ -17,7 +17,7 @@
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:1178-1200` (end of the `/kick` handler, right after the crit block)
 
-- [ ] **Step 1: Add the knockout-offer block after the crit block**
+- [x] **Step 1: Add the knockout-offer block after the crit block**
 
 Find:
 
@@ -103,12 +103,12 @@ Replace with:
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the live weapon-lookup query in isolation**
+- [x] **Step 3: Verify the live weapon-lookup query in isolation**
 
 ```bash
 node -e "
@@ -139,7 +139,7 @@ victim (111) holds after steal: undefined expected undefined
 new holder (333) holds: { weapon_key: 'axe' } expected { weapon_key: 'axe' }
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -154,7 +154,7 @@ git push
 **Files:**
 - Modify: `c:\Users\123\Projects\tg-bot\bot.js:2228-2229` (right after the existing `bot.on('polling_error', ...)`/`bot.on('message', ...)` registrations)
 
-- [ ] **Step 1: Add the callback_query handler**
+- [x] **Step 1: Add the callback_query handler**
 
 Find:
 
@@ -217,12 +217,12 @@ bot.on('callback_query', async (query) => {
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
