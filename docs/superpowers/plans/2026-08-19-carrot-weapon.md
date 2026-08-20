@@ -294,7 +294,7 @@ git push
 
 **Note on line numbers:** Tasks 1-2 added lines earlier in the file. Locate this Find block by its surrounding text.
 
-- [ ] **Step 1: Restructure the damage calc, add hole outcomes, cat/fox application, and crit suppression**
+- [x] **Step 1: Restructure the damage calc, add hole outcomes, cat/fox application, and crit suppression**
 
 Find:
 
@@ -436,12 +436,12 @@ Replace with:
 
 **Do not touch the "Knockout weapon-steal offer" block that follows this** (`if (targetHealthAfter === 0) { ... }`, with the inline-button code) — it's unchanged and correctly fires for the "ass" outcome automatically, since `targetHealthAfter` is set to `0` by that branch the same way any other lethal hit sets it.
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the health-math (heal clamp and full-wipe floor) in isolation**
+- [x] **Step 3: Verify the health-math (heal clamp and full-wipe floor) in isolation**
 
 ```bash
 node -e "
@@ -485,7 +485,7 @@ ass full-wipe from 37: 0 expected 0
 ass full-wipe already at 0: 0 expected 0
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
@@ -502,7 +502,7 @@ git push
 
 **Note on line numbers:** Tasks 1-3 shifted lines earlier in the file. Locate by surrounding text.
 
-- [ ] **Step 1: Special-case carrot in the weapon-display loop**
+- [x] **Step 1: Special-case carrot in the weapon-display loop**
 
 Find:
 
@@ -526,12 +526,12 @@ Replace with:
   }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
