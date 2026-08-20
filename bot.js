@@ -1264,7 +1264,7 @@ bot.onText(/\/me\b/, (msg) => {
   const hidden = isHidden(msg.from.id);
   const hideRow = db.prepare('SELECT hidden_until, hidden_since FROM user_health WHERE user_id = ?').get(msg.from.id);
   if (hidden) {
-    lines.push(`🚪 Прячешься в чулане (осталось ${formatExpire(hideRow.hidden_until)})`);
+    lines.push(`🐰 Прячешься в чулане (осталось ${formatExpire(hideRow.hidden_until)})`);
   }
 
   const stats = getStats(msg.from.id);
@@ -1277,7 +1277,7 @@ bot.onText(/\/me\b/, (msg) => {
   const visibleSeconds = Math.max(0, trackedSeconds - liveHiddenSeconds);
   lines.push(`⚔️ Крит. ударов нанесено: ${stats.crit_count}`);
   lines.push(`🤕 Травм нанесено: ${stats.injuries_dealt}`);
-  lines.push(`🚪 В чулане провёл: ${formatDuration(liveHiddenSeconds)}`);
+  lines.push(`🐰 В чулане провёл: ${formatDuration(liveHiddenSeconds)}`);
   lines.push(`🏃 Вне чулана: ${formatDuration(visibleSeconds)}`);
 
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
@@ -1332,7 +1332,7 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
 
   const hiddenUntil = Math.floor((Date.now() + hours * 60 * 60 * 1000) / 1000);
   db.prepare('UPDATE user_health SET hidden_until = ?, hidden_since = COALESCE(hidden_since, ?) WHERE user_id = ?').run(hiddenUntil, now, msg.from.id);
-  bot.sendMessage(msg.chat.id, `🚪 ${actorLabel} прячется в чулане ${hours} ч.`, threadOpts(msg)).catch(() => {});
+  bot.sendMessage(msg.chat.id, `🐰 ${actorLabel} прячется в чулане ${hours} ч.`, threadOpts(msg)).catch(() => {});
 });
 
 // /find — lists every fighter that has ever appeared in user_health (has
@@ -1354,7 +1354,7 @@ bot.onText(/\/find\b/, (msg) => {
     const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
     if (isHidden(user_id)) {
       const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(user_id);
-      hiddenLines.push(`🚪 ${label} (ещё ${formatExpire(row.hidden_until)})`);
+      hiddenLines.push(`🐰 ${label} (ещё ${formatExpire(row.hidden_until)})`);
     } else {
       visibleLines.push(`⚔️ ${label}`);
     }
@@ -2588,7 +2588,7 @@ bot.onText(/\/help\b/, (msg) => {
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление — 1 за 20 мин; пауза 1 мин действует отдельно на каждое оружие/на голые руки; ровно 100/100 — сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
-    '/find — список всех бойцов: 🚪 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
+    '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
