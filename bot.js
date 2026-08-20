@@ -269,6 +269,44 @@ db.exec(`
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN hidden_until INTEGER');
 } catch {}
+// hidden_since marks when the CURRENT hide session actually started —
+// preserved across a /hide refresh (extending hidden_until while already
+// hidden doesn't reset it), so accrueHiddenSeconds/endHideSession below
+// can compute an exact session duration on whichever code path first
+// notices it ended, instead of guessing from "whenever we happened to
+// check". See pvp_stats and isHidden further down.
+try {
+  db.exec('ALTER TABLE user_health ADD COLUMN hidden_since INTEGER');
+} catch {}
+
+// Per-fighter combat stats. hidden_seconds accrues only when a hide
+// session definitively ends (see endHideSession) — "time NOT hidden" is
+// derived at display time as (now - first_tracked_at - hidden_seconds)
+// rather than kept as its own running bucket, so there's one source of
+// truth instead of two counters that could drift apart.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pvp_stats (
+    user_id INTEGER PRIMARY KEY,
+    crit_count INTEGER NOT NULL DEFAULT 0,
+    injuries_dealt INTEGER NOT NULL DEFAULT 0,
+    hidden_seconds INTEGER NOT NULL DEFAULT 0,
+    first_tracked_at INTEGER NOT NULL
+  )
+`);
+
+// Lightweight username/first-name cache keyed by user_id, refreshed on
+// every incoming message (see the main message handler below) — nothing
+// upstream of this already maps an arbitrary user_id back to a display
+// name (weapon_ownership only resolves its own seeded owners), and /find
+// needs to list every past fighter by name, not just weapon holders.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS known_users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    last_seen_at INTEGER
+  )
+`);
 // Energy: separate resource from health, spent 1-per-swing on /kick (and
 // troll-bot's /fight, via its own cross-process connection to this same
 // table), regenerating 1 per 20 minutes up to max_energy. Same
@@ -676,6 +714,18 @@ function formatExpire(expiresAt) {
   return `${mins}м`;
 }
 
+// Same bucketing as formatExpire, but for a plain duration in seconds
+// rather than an absolute future timestamp (see /me's and /find's stats
+// display).
+function formatDuration(seconds) {
+  const mins = Math.floor(Math.max(0, seconds) / 60);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}д ${hours % 24}ч`;
+  if (hours > 0) return `${hours}ч ${mins % 60}м`;
+  return `${mins}м`;
+}
+
 function parseDuration(str) {
   if (!str) return null;
   const m = str.match(/^(\d+)(m|h|d)$/);
@@ -954,9 +1004,55 @@ function consumeEnergy(userId) {
 // /hide protection — lazily read, no separate cleanup needed since it's
 // just a timestamp comparison (same idiom as getUserInjury's expiry check,
 // minus the DELETE since there's no separate row to remove).
+function ensureStatsRow(userId) {
+  db.prepare('INSERT OR IGNORE INTO pvp_stats (user_id, first_tracked_at) VALUES (?, ?)').run(userId, Math.floor(Date.now() / 1000));
+}
+function getStats(userId) {
+  ensureStatsRow(userId);
+  return db.prepare('SELECT crit_count, injuries_dealt, hidden_seconds, first_tracked_at FROM pvp_stats WHERE user_id = ?').get(userId);
+}
+function recordCrit(userId) {
+  ensureStatsRow(userId);
+  db.prepare('UPDATE pvp_stats SET crit_count = crit_count + 1 WHERE user_id = ?').run(userId);
+}
+function recordInjuryDealt(userId) {
+  ensureStatsRow(userId);
+  db.prepare('UPDATE pvp_stats SET injuries_dealt = injuries_dealt + 1 WHERE user_id = ?').run(userId);
+}
+function accrueHiddenSeconds(userId, seconds) {
+  if (seconds <= 0) return;
+  ensureStatsRow(userId);
+  db.prepare('UPDATE pvp_stats SET hidden_seconds = hidden_seconds + ? WHERE user_id = ?').run(seconds, userId);
+}
+
+// Ends a hide session as of `endedAt` (unix seconds) — accrues its exact
+// duration into pvp_stats.hidden_seconds using hidden_since (the true
+// session start, preserved across /hide refreshes), then clears both
+// hidden_until and hidden_since. Shared by every termination path:
+// natural expiry (isHidden below, passing hidden_until itself as the
+// true end instant), attacking while hidden, and чулан eviction (both of
+// which pass the real current time).
+function endHideSession(userId, endedAt) {
+  const row = db.prepare('SELECT hidden_since FROM user_health WHERE user_id = ?').get(userId);
+  if (row && row.hidden_since) {
+    accrueHiddenSeconds(userId, endedAt - row.hidden_since);
+  }
+  db.prepare('UPDATE user_health SET hidden_until = NULL, hidden_since = NULL WHERE user_id = ?').run(userId);
+}
+
+// /hide protection — lazily read, same idiom as getUserInjury's expiry
+// check. On a naturally-expired hide (as opposed to attack-cancel or
+// чулан eviction, which call endHideSession directly with a real-time
+// "now"), finalizes the session via endHideSession using hidden_until
+// itself as the true end instant — not whenever this happens to be
+// called — so hidden_seconds stays accurate regardless of how long the
+// stale row sits unnoticed before something next checks this user.
 function isHidden(userId) {
   const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(userId);
-  return !!row && !!row.hidden_until && row.hidden_until * 1000 > Date.now();
+  if (!row || !row.hidden_until) return false;
+  if (row.hidden_until * 1000 > Date.now()) return true;
+  endHideSession(userId, row.hidden_until);
+  return false;
 }
 
 // UPDATE...RETURNING keeps the floor-then-read atomic against the regen
@@ -1099,6 +1195,10 @@ function applyTimedAnimal(userId, chatId, username, animalType) {
 // re-trigger your OWN hiding, not how often you can attack.
 const hideCooldowns = new Map();
 const HIDE_COOLDOWN_MS = 20 * 60 * 1000;
+// Everyone hides in the same чулан (closet), which only fits 5 at once —
+// a genuinely new arrival (not just refreshing their own ongoing stay)
+// bumps a random existing occupant out to make room. See /hide below.
+const HIDE_CLOSET_SIZE = 5;
 
 bot.onText(/\/me\b/, (msg) => {
   const health = getUserHealth(msg.from.id);
@@ -1132,10 +1232,27 @@ bot.onText(/\/me\b/, (msg) => {
     }
   });
 
-  const healthRow = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(msg.from.id);
-  if (healthRow && healthRow.hidden_until && healthRow.hidden_until * 1000 > Date.now()) {
-    lines.push(`🫥 Прячешься от драк (осталось ${formatExpire(healthRow.hidden_until)})`);
+  // isHidden also lazily finalizes an expired session into pvp_stats
+  // before answering, so the live projection below always starts from an
+  // up-to-date hidden_seconds baseline.
+  const hidden = isHidden(msg.from.id);
+  const hideRow = db.prepare('SELECT hidden_until, hidden_since FROM user_health WHERE user_id = ?').get(msg.from.id);
+  if (hidden) {
+    lines.push(`🚪 Прячешься в чулане (осталось ${formatExpire(hideRow.hidden_until)})`);
   }
+
+  const stats = getStats(msg.from.id);
+  const nowSec = Math.floor(Date.now() / 1000);
+  // hidden_seconds only accrues once a session ENDS — while still
+  // hidden, add the in-progress elapsed time on top for an accurate
+  // live total without mutating the row on every /me call.
+  const liveHiddenSeconds = stats.hidden_seconds + (hidden && hideRow.hidden_since ? nowSec - hideRow.hidden_since : 0);
+  const trackedSeconds = Math.max(0, nowSec - stats.first_tracked_at);
+  const visibleSeconds = Math.max(0, trackedSeconds - liveHiddenSeconds);
+  lines.push(`⚔️ Крит. ударов нанесено: ${stats.crit_count}`);
+  lines.push(`🤕 Травм нанесено: ${stats.injuries_dealt}`);
+  lines.push(`🚪 В чулане провёл: ${formatDuration(liveHiddenSeconds)}`);
+  lines.push(`🏃 Вне чулана: ${formatDuration(visibleSeconds)}`);
 
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
@@ -1167,10 +1284,295 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
   }
 
   hideCooldowns.set(msg.from.id, Date.now());
+  const now = Math.floor(Date.now() / 1000);
+  // isHidden also lazily finalizes an expired session into stats before
+  // answering — a genuinely new arrival (returns false here) is the only
+  // case that can trigger an eviction below; refreshing an ongoing stay
+  // never needs to bump anyone, since this person already occupies a spot.
+  const alreadyHidden = isHidden(msg.from.id);
+  if (!alreadyHidden) {
+    const nowMs = Date.now();
+    const others = db.prepare(
+      'SELECT user_id FROM user_health WHERE hidden_until IS NOT NULL AND hidden_until * 1000 > ? AND user_id != ?'
+    ).all(nowMs, msg.from.id);
+    if (others.length >= HIDE_CLOSET_SIZE) {
+      const evictedId = pick(others).user_id;
+      endHideSession(evictedId, now);
+      const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(evictedId);
+      const evictedLabel = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${evictedId}`;
+      bot.sendMessage(msg.chat.id, `🚪 В чулане было тесно — ${evictedLabel} вылетает наружу, освобождая место для ${actorLabel}!`, threadOpts(msg)).catch(() => {});
+    }
+  }
+
   const hiddenUntil = Math.floor((Date.now() + hours * 60 * 60 * 1000) / 1000);
-  db.prepare('UPDATE user_health SET hidden_until = ? WHERE user_id = ?').run(hiddenUntil, msg.from.id);
-  bot.sendMessage(msg.chat.id, `🫥 ${actorLabel} спрятался от драк на ${hours} ч.`, threadOpts(msg)).catch(() => {});
+  db.prepare('UPDATE user_health SET hidden_until = ?, hidden_since = COALESCE(hidden_since, ?) WHERE user_id = ?').run(hiddenUntil, now, msg.from.id);
+  bot.sendMessage(msg.chat.id, `🚪 ${actorLabel} прячется в чулане ${hours} ч.`, threadOpts(msg)).catch(() => {});
 });
+
+// /find — lists every fighter that has ever appeared in user_health (has
+// hit /kick or /hide at least once), by known_users' cached display
+// name, with their current hidden status. Each fighter also gets an
+// inline "attack" button, always a bare-handed swing (slot 0) regardless
+// of who clicks it — the clicker is the attacker, not whoever ran /find
+// (see the find_kick branch in the callback_query handler below), which
+// is why the button carries no attacker id in its callback_data.
+bot.onText(/\/find\b/, (msg) => {
+  const fighters = db.prepare('SELECT user_id FROM user_health').all();
+  if (!fighters.length) {
+    bot.sendMessage(msg.chat.id, 'Пока никто не дрался и не прятался.', threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const lines = ['⚔️ Бойцы:'];
+  const buttons = [];
+  for (const { user_id } of fighters) {
+    const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(user_id);
+    const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
+    if (isHidden(user_id)) {
+      const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(user_id);
+      lines.push(`🚪 ${label} — в чулане (осталось ${formatExpire(row.hidden_until)})`);
+    } else {
+      lines.push(`🟢 ${label} — не прячется`);
+    }
+    buttons.push([{ text: `👊 ${label}`, callback_data: `find_kick:${user_id}` }]);
+  }
+  bot.sendMessage(
+    msg.chat.id,
+    lines.join('\n'),
+    threadOpts(msg, { reply_markup: { inline_keyboard: buttons } })
+  ).catch(() => {});
+});
+
+// Shared by both attack entry points: /kick's own onText handler (below,
+// after parsing a target and weapon slot from the command text) and the
+// /find roster's inline "attack" buttons (see the find_kick branch in the
+// callback_query handler further down, which always attacks bare-handed
+// — slot 0 — since a button click carries no room for typing a slot
+// number). Everything from here on is entry-point-agnostic: it only
+// needs a chat to post in, a msg-like object for threadOpts (just
+// .message_thread_id), and plain {id, username, firstName} attacker/
+// target descriptors — never the raw Telegram message object itself,
+// since a button click has no such thing for the clicker.
+async function performKick(chatId, msgLike, attacker, target, slot) {
+  const actorLabel = attacker.username ? `@${attacker.username}` : attacker.firstName;
+  const targetLabel = target.username ? `@${target.username}` : target.firstName;
+
+  if (target.id === attacker.id) {
+    bot.sendMessage(chatId, `${actorLabel}, нельзя ударить самого себя!`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (isHidden(target.id)) {
+    bot.sendMessage(chatId, `${targetLabel} прячется в чулане — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+
+  const injury = getUserInjury(attacker.id);
+  if (injury) {
+    bot.sendMessage(chatId, `${actorLabel}, ${PVP_INJURY_REFUSAL_TEXT[injury]}`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  const attackerHealth = getUserHealth(attacker.id);
+  if (isKnockedOut(attacker.id)) {
+    bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (attackerHealth.energy === 0) {
+    bot.sendMessage(chatId, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+
+  // Weapon is resolved before the cooldown check since the cooldown is
+  // keyed by weapon (see checkPvpCooldown) — which bucket applies depends
+  // on what this swing actually turns out to be (including the
+  // empty-slot-falls-back-to-bare-handed case).
+  const weapon = pickWeaponForAttacker('human', attacker.id, slot, PVP_WEAPONS);
+  const cooldownRemaining = checkPvpCooldown(attacker.id, weapon.key);
+  if (cooldownRemaining > 0) {
+    bot.sendMessage(
+      chatId,
+      `${actorLabel}, нельзя бить так часто ${weapon.key ? WEAPON_DEFS[weapon.key].instrumental : 'голыми руками'} — подожди ещё ${cooldownRemaining} сек.`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+    return;
+  }
+
+  if (isHidden(attacker.id)) {
+    endHideSession(attacker.id, Math.floor(Date.now() / 1000));
+    await bot.sendMessage(chatId, `🚪 ${actorLabel} выскакивает из чулана, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
+  }
+  consumeEnergy(attacker.id);
+
+  const bodyPart = pick(PVP_BODY_PARTS);
+  const roll = Math.floor(Math.random() * 101);
+  const success = roll >= getHitThreshold(target.id);
+  const outcome = success ? '✅ удачно' : '❌ неудачно';
+  await bot.sendMessage(
+    chatId,
+    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100`,
+    threadOpts(msgLike)
+  ).catch(() => {});
+  if (!success) {
+    // Natural 0 with a real weapon in hand — fumble drops it right there
+    // in this chat. owner_type = 'dropped' takes it out of everyone's
+    // getWeaponsFor (so it stops counting for /kickN or /me) until the
+    // pickup listener in the main message handler hands it to whoever
+    // writes next (see "--- Filter muted & animal messages ---" below).
+    // Bare-handed misses (weapon.key === null) have nothing to drop.
+    if (roll === 0 && weapon.key) {
+      db.prepare(
+        "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
+      ).run(attacker.id, chatId, weapon.key);
+      await bot.sendMessage(
+        chatId,
+        `😱 ${actorLabel} так мажет, что ${WEAPON_DEFS[weapon.key].name} вылетает из рук! Кто первым напишет что-нибудь в чат — подберёт.`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  const targetHealthBefore = getUserHealth(target.id);
+  let targetHealthAfter;
+  let hole = null;
+
+  if (roll === 100) {
+    targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
+    await bot.sendMessage(
+      chatId,
+      `💯 СОКРУШИТЕЛЬНЫЙ УДАР! ${actorLabel} сносит ${targetLabel} всё здоровье разом (${targetHealthBefore.health} -> ${targetHealthAfter})!`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+  } else if (weapon.key === 'carrot') {
+    const holes = ['ear', 'nose', 'mouth', 'dick', 'ass'];
+    hole = holes[Math.floor(Math.random() * holes.length)];
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+
+    if (hole === 'ear') {
+      const dmg = Math.round(rawDmg * 0.8);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'nose') {
+      const dmg = Math.round(rawDmg * 0.9);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'mouth') {
+      const dmg = Math.round(rawDmg * 0.5);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'dick') {
+      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
+      const healed = targetHealthAfter - targetHealthBefore.health;
+      db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      await bot.sendMessage(chatId, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает +${healed} здоровья и оргазм (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
+    } else {
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
+      await bot.sendMessage(chatId, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
+    }
+  } else {
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+    const dmg = Math.round(rawDmg * weapon.multiplier);
+    targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+    await bot.sendMessage(
+      chatId,
+      `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+  }
+
+  // Cat/fox applies on any successful carrot hit regardless of which
+  // branch produced targetHealthAfter (a hole roll above, or a natural
+  // 100 bypassing hole-selection entirely) — pulled out of the carrot
+  // branch itself so the nat-100 path doesn't have to duplicate it.
+  if (weapon.key === 'carrot') {
+    const animalType = Math.random() < 0.5 ? 'cat' : 'fox';
+    applyTimedAnimal(target.id, chatId, target.username || target.firstName, animalType);
+    const animalMsg = animalType === 'cat'
+      ? `🐱 ${targetLabel} на 20 минут теперь мяукает как кошка!`
+      : `🦊 ${targetLabel} на 20 минут теперь рычит как лиса!`;
+    await bot.sendMessage(chatId, animalMsg, threadOpts(msgLike)).catch(() => {});
+  }
+
+  if (weapon.key === 'scissors') {
+    applyBleed(target.id, chatId);
+    await bot.sendMessage(chatId, `🩸 ${targetLabel} начинает истекать кровью от ржавых ножниц!`, threadOpts(msgLike)).catch(() => {});
+    if (Math.random() < 0.05) {
+      await bot.sendMessage(chatId, `✂️ ${actorLabel} случайно отчекрыжил ${targetLabel} палец ржавыми ножницами!`, threadOpts(msgLike)).catch(() => {});
+    }
+  }
+
+  if (weapon.key === 'crutch') {
+    applyDimon(target.id, chatId, target.username || target.firstName);
+    await bot.sendMessage(chatId, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msgLike)).catch(() => {});
+  }
+
+  // isCrit is tracked for stats independent of whether the injury/steal
+  // side effects below actually fire — a nat-100 or carrot's "ass" is
+  // still a critical hit in spirit, just with its own devastating effect
+  // already covering the "this was a big deal" side effects, so the
+  // usual injury+steal block is suppressed for those two specifically.
+  const isCrit = roll >= getCritThreshold(attacker.id);
+  if (isCrit) {
+    recordCrit(attacker.id);
+  }
+  if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass')) {
+    const injuryType = pick(['arm', 'leg', 'head']);
+    const healHours = applyInjury(target.id, injuryType);
+    recordInjuryDealt(attacker.id);
+    const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
+    await bot.sendMessage(
+      chatId,
+      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healHours} ч).`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+    if (weapon.key === 'horns') {
+      await bot.sendMessage(chatId, `🐂 ${actorLabel} насадила ${targetLabel} на рога!`, threadOpts(msgLike)).catch(() => {});
+    }
+    const stolenKey = maybeStealWeapon(target.id, { type: 'human', userId: attacker.id, username: attacker.username, firstName: attacker.firstName });
+    if (stolenKey) {
+      const stolenDef = WEAPON_DEFS[stolenKey];
+      await bot.sendMessage(
+        chatId,
+        `${stolenDef.emoji} ${actorLabel} отобрал ${stolenDef.accusative} у ${targetLabel} и теперь бьёт ${stolenDef.instrumental} сам!`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    }
+  }
+
+  // Knockout weapon-steal offer — additive to the silent 5% crit-steal
+  // above, not a replacement (see docs/superpowers/specs/
+  // 2026-08-19-knockout-steal-buttons-design.md). Looked up live rather
+  // than from a value cached earlier in this handler: if the crit
+  // block's own maybeStealWeapon just moved a weapon to attacker.id,
+  // this SELECT correctly finds it gone from target.id, so no redundant
+  // "steal the weapon you already just got" button appears for it. If
+  // the victim holds more than one weapon, one button per weapon lets
+  // the attacker choose which single one to take (see the callback
+  // handler below) rather than grabbing an arbitrary one.
+  if (targetHealthAfter === 0) {
+    const heldWeapons = getWeaponsFor('human', target.id);
+    if (heldWeapons.length > 0) {
+      const defs = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key]);
+      const itemsText = defs.length === 1
+        ? defs[0].accusative
+        : defs.slice(0, -1).map(d => d.accusative).join(', ') + ' и ' + defs[defs.length - 1].accusative;
+      const question = defs.length === 1 ? 'Забрать?' : 'Что забрать?';
+      await bot.sendMessage(
+        chatId,
+        `${targetLabel} в отключке — с ним ${itemsText}. ${question}`,
+        threadOpts(msgLike, {
+          reply_markup: {
+            inline_keyboard: [
+              ...heldWeapons.map(row => [{
+                text: `🗡 Забрать ${WEAPON_DEFS[row.weapon_key].accusative}`,
+                callback_data: `steal_yes:${attacker.id}:${target.id}:${row.weapon_key}`,
+              }]),
+              [{ text: '🤝 Оставить', callback_data: `steal_no:${attacker.id}` }],
+            ],
+          },
+        })
+      ).catch(() => {});
+    }
+  }
+}
 
 // Target resolution: reply-to-message first, else a best-effort
 // bot.getChat('@handle') — this bot has no relationships table to look
@@ -1178,9 +1580,10 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
 // /kick (no number) always swings bare-handed, even for someone holding
 // real weapons — /kick1/2/3 picks a specific held weapon by slot (see
 // pickWeaponForAttacker), falling back to bare-handed if that slot is
-// empty. match[1] is the slot digit, match[2] is the target text.
+// empty. match[1] is the slot digit, match[2] is the target text. All
+// the actual combat logic lives in performKick above, shared with
+// /find's inline attack buttons (see the find_kick callback branch).
 bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
-  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const slot = match[1] ? parseInt(match[1], 10) : 0;
 
   let target = null;
@@ -1202,213 +1605,8 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
     bot.sendMessage(msg.chat.id, 'Укажи @юзернейм или ответь на сообщение того, кого хочешь ударить.', threadOpts(msg)).catch(() => {});
     return;
   }
-  if (target.id === msg.from.id) {
-    bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя ударить самого себя!`, threadOpts(msg)).catch(() => {});
-    return;
-  }
-  const targetLabel = target.username ? `@${target.username}` : target.firstName;
-  if (isHidden(target.id)) {
-    bot.sendMessage(msg.chat.id, `${targetLabel} прячется от драк — недоступен для удара.`, threadOpts(msg)).catch(() => {});
-    return;
-  }
 
-  const injury = getUserInjury(msg.from.id);
-  if (injury) {
-    bot.sendMessage(msg.chat.id, `${actorLabel}, ${PVP_INJURY_REFUSAL_TEXT[injury]}`, threadOpts(msg)).catch(() => {});
-    return;
-  }
-  const attackerHealth = getUserHealth(msg.from.id);
-  if (isKnockedOut(msg.from.id)) {
-    bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msg)).catch(() => {});
-    return;
-  }
-  if (attackerHealth.energy === 0) {
-    bot.sendMessage(msg.chat.id, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msg)).catch(() => {});
-    return;
-  }
-
-  // Weapon is resolved before the cooldown check since the cooldown is
-  // keyed by weapon (see checkPvpCooldown) — which bucket applies depends
-  // on what this swing actually turns out to be (including the
-  // empty-slot-falls-back-to-bare-handed case).
-  const weapon = pickWeaponForAttacker('human', msg.from.id, slot, PVP_WEAPONS);
-  const cooldownRemaining = checkPvpCooldown(msg.from.id, weapon.key);
-  if (cooldownRemaining > 0) {
-    bot.sendMessage(
-      msg.chat.id,
-      `${actorLabel}, нельзя бить так часто ${weapon.key ? WEAPON_DEFS[weapon.key].instrumental : 'голыми руками'} — подожди ещё ${cooldownRemaining} сек.`,
-      threadOpts(msg)
-    ).catch(() => {});
-    return;
-  }
-
-  if (isHidden(msg.from.id)) {
-    db.prepare('UPDATE user_health SET hidden_until = NULL WHERE user_id = ?').run(msg.from.id);
-    await bot.sendMessage(msg.chat.id, `🫥 ${actorLabel} перестал прятаться, чтобы напасть!`, threadOpts(msg)).catch(() => {});
-  }
-  consumeEnergy(msg.from.id);
-
-  const bodyPart = pick(PVP_BODY_PARTS);
-  const roll = Math.floor(Math.random() * 101);
-  const success = roll >= getHitThreshold(target.id);
-  const outcome = success ? '✅ удачно' : '❌ неудачно';
-  await bot.sendMessage(
-    msg.chat.id,
-    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100`,
-    threadOpts(msg)
-  ).catch(() => {});
-  if (!success) {
-    // Natural 0 with a real weapon in hand — fumble drops it right there
-    // in this chat. owner_type = 'dropped' takes it out of everyone's
-    // getWeaponsFor (so it stops counting for /kickN or /me) until the
-    // pickup listener in the main message handler hands it to whoever
-    // writes next (see "--- Filter muted & animal messages ---" below).
-    // Bare-handed misses (weapon.key === null) have nothing to drop.
-    if (roll === 0 && weapon.key) {
-      db.prepare(
-        "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
-      ).run(msg.from.id, msg.chat.id, weapon.key);
-      await bot.sendMessage(
-        msg.chat.id,
-        `😱 ${actorLabel} так мажет, что ${WEAPON_DEFS[weapon.key].name} вылетает из рук! Кто первым напишет что-нибудь в чат — подберёт.`,
-        threadOpts(msg)
-      ).catch(() => {});
-    }
-    return;
-  }
-
-  const targetHealthBefore = getUserHealth(target.id);
-  let targetHealthAfter;
-  let hole = null;
-
-  if (roll === 100) {
-    targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, targetHealthBefore.health);
-    await bot.sendMessage(
-      msg.chat.id,
-      `💯 СОКРУШИТЕЛЬНЫЙ УДАР! ${actorLabel} сносит ${targetLabel} всё здоровье разом (${targetHealthBefore.health} -> ${targetHealthAfter})!`,
-      threadOpts(msg)
-    ).catch(() => {});
-  } else if (weapon.key === 'carrot') {
-    const holes = ['ear', 'nose', 'mouth', 'dick', 'ass'];
-    hole = holes[Math.floor(Math.random() * holes.length)];
-    const rawDmg = Math.floor(Math.random() * 20) + 1;
-
-    if (hole === 'ear') {
-      const dmg = Math.round(rawDmg * 0.8);
-      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
-      await bot.sendMessage(msg.chat.id, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msg)).catch(() => {});
-    } else if (hole === 'nose') {
-      const dmg = Math.round(rawDmg * 0.9);
-      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
-      await bot.sendMessage(msg.chat.id, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msg)).catch(() => {});
-    } else if (hole === 'mouth') {
-      const dmg = Math.round(rawDmg * 0.5);
-      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
-      await bot.sendMessage(msg.chat.id, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msg)).catch(() => {});
-    } else if (hole === 'dick') {
-      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
-      const healed = targetHealthAfter - targetHealthBefore.health;
-      db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
-      await bot.sendMessage(msg.chat.id, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает +${healed} здоровья и оргазм (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msg)).catch(() => {});
-    } else {
-      targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, targetHealthBefore.health);
-      await bot.sendMessage(msg.chat.id, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msg)).catch(() => {});
-    }
-  } else {
-    const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * weapon.multiplier);
-    targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, dmg);
-    await bot.sendMessage(
-      msg.chat.id,
-      `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
-      threadOpts(msg)
-    ).catch(() => {});
-  }
-
-  // Cat/fox applies on any successful carrot hit regardless of which
-  // branch produced targetHealthAfter (a hole roll above, or a natural
-  // 100 bypassing hole-selection entirely) — pulled out of the carrot
-  // branch itself so the nat-100 path doesn't have to duplicate it.
-  if (weapon.key === 'carrot') {
-    const animalType = Math.random() < 0.5 ? 'cat' : 'fox';
-    applyTimedAnimal(target.id, msg.chat.id, target.username || target.firstName, animalType);
-    const animalMsg = animalType === 'cat'
-      ? `🐱 ${targetLabel} на 20 минут теперь мяукает как кошка!`
-      : `🦊 ${targetLabel} на 20 минут теперь рычит как лиса!`;
-    await bot.sendMessage(msg.chat.id, animalMsg, threadOpts(msg)).catch(() => {});
-  }
-
-  if (weapon.key === 'scissors') {
-    applyBleed(target.id, msg.chat.id);
-    await bot.sendMessage(msg.chat.id, `🩸 ${targetLabel} начинает истекать кровью от ржавых ножниц!`, threadOpts(msg)).catch(() => {});
-    if (Math.random() < 0.05) {
-      await bot.sendMessage(msg.chat.id, `✂️ ${actorLabel} случайно отчекрыжил ${targetLabel} палец ржавыми ножницами!`, threadOpts(msg)).catch(() => {});
-    }
-  }
-
-  if (weapon.key === 'crutch') {
-    applyDimon(target.id, msg.chat.id, target.username || target.firstName);
-    await bot.sendMessage(msg.chat.id, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msg)).catch(() => {});
-  }
-
-  if (roll !== 100 && roll >= getCritThreshold(msg.from.id) && !(weapon.key === 'carrot' && hole === 'ass')) {
-    const injuryType = pick(['arm', 'leg', 'head']);
-    const healHours = applyInjury(target.id, injuryType);
-    const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
-    await bot.sendMessage(
-      msg.chat.id,
-      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healHours} ч).`,
-      threadOpts(msg)
-    ).catch(() => {});
-    if (weapon.key === 'horns') {
-      await bot.sendMessage(msg.chat.id, `🐂 ${actorLabel} насадила ${targetLabel} на рога!`, threadOpts(msg)).catch(() => {});
-    }
-    const stolenKey = maybeStealWeapon(target.id, { type: 'human', userId: msg.from.id, username: msg.from.username, firstName: msg.from.first_name });
-    if (stolenKey) {
-      const stolenDef = WEAPON_DEFS[stolenKey];
-      await bot.sendMessage(
-        msg.chat.id,
-        `${stolenDef.emoji} ${actorLabel} отобрал ${stolenDef.accusative} у ${targetLabel} и теперь бьёт ${stolenDef.instrumental} сам!`,
-        threadOpts(msg)
-      ).catch(() => {});
-    }
-  }
-
-  // Knockout weapon-steal offer — additive to the silent 5% crit-steal
-  // above, not a replacement (see docs/superpowers/specs/
-  // 2026-08-19-knockout-steal-buttons-design.md). Looked up live rather
-  // than from a value cached earlier in this handler: if the crit
-  // block's own maybeStealWeapon just moved a weapon to msg.from.id,
-  // this SELECT correctly finds it gone from target.id, so no redundant
-  // "steal the weapon you already just got" button appears for it. If
-  // the victim holds more than one weapon, one button per weapon lets
-  // the attacker choose which single one to take (see the callback
-  // handler below) rather than grabbing an arbitrary one.
-  if (targetHealthAfter === 0) {
-    const heldWeapons = getWeaponsFor('human', target.id);
-    if (heldWeapons.length > 0) {
-      const defs = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key]);
-      const itemsText = defs.length === 1
-        ? defs[0].accusative
-        : defs.slice(0, -1).map(d => d.accusative).join(', ') + ' и ' + defs[defs.length - 1].accusative;
-      const question = defs.length === 1 ? 'Забрать?' : 'Что забрать?';
-      await bot.sendMessage(
-        msg.chat.id,
-        `${targetLabel} в отключке — с ним ${itemsText}. ${question}`,
-        threadOpts(msg, {
-          reply_markup: {
-            inline_keyboard: [
-              ...heldWeapons.map(row => [{
-                text: `🗡 Забрать ${WEAPON_DEFS[row.weapon_key].accusative}`,
-                callback_data: `steal_yes:${msg.from.id}:${target.id}:${row.weapon_key}`,
-              }]),
-              [{ text: '🤝 Оставить', callback_data: `steal_no:${msg.from.id}` }],
-            ],
-          },
-        })
-      ).catch(() => {});
-    }
-  }
+  await performKick(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, target, slot);
 });
 
 // --- /kuniFun, /kuniAlia, /kuniTama: public self-buffs, no reply/target
@@ -2000,6 +2198,12 @@ bot.on('message', async (msg) => {
   if (msg.from.username) {
     db.prepare("UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_type = 'human' AND owner_user_id IS NULL").run(msg.from.id, msg.from.username, msg.from.username);
   }
+  // known_users cache (see /find below) — refreshed on every message so
+  // display names stay current even if someone changes their @username.
+  db.prepare(
+    'INSERT INTO known_users (user_id, username, first_name, last_seen_at) VALUES (?, ?, ?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name, last_seen_at = excluded.last_seen_at'
+  ).run(msg.from.id, msg.from.username || null, msg.from.first_name || null, Math.floor(Date.now() / 1000));
   // Natural-0 fumble pickup (see /kick's drop above): first message in the
   // drop's chat from anyone but the dropper claims it. Runs unconditionally,
   // same reasoning as the resolution UPDATE above — a muted/fisher/molchun
@@ -2364,9 +2568,10 @@ bot.onText(/\/help\b/, (msg) => {
     '** [текст] — действие от третьего лица',
     '',
     'PvP:',
-    '/me — здоровье, энергия, травма и укрытие',
+    '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление — 1 за 20 мин; пауза 1 мин действует отдельно на каждое оружие/на голые руки; ровно 100/100 — сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает)',
-    '/hide [часы] — спрятаться от /kick на N часов (по умолчанию 1); тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
+    '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
+    '/find — список всех бойцов и их статус (прячется/нет), у каждого кнопка для мгновенной атаки голыми руками (бьёт тот, кто нажал кнопку, а не автор /find)',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
@@ -2474,6 +2679,26 @@ bot.on('message', (msg) => console.log('сообщение от:', msg.from?.use
 // stale snapshot.
 bot.on('callback_query', async (query) => {
   const data = query.data || '';
+
+  // /find's per-fighter attack button — always a bare-handed swing (slot
+  // 0), attacker is whoever clicked (query.from), not whoever ran /find.
+  // Reuses performKick exactly like /kick's own text-command handler; no
+  // attacker id is encoded in callback_data since anyone may click.
+  if (data.startsWith('find_kick:')) {
+    const targetId = Number(data.split(':')[1]);
+    bot.answerCallbackQuery(query.id).catch(() => {});
+    const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(targetId);
+    const target = {
+      id: targetId,
+      username: known ? known.username : null,
+      firstName: known && known.first_name ? known.first_name : `игрок ${targetId}`,
+    };
+    const attacker = { id: query.from.id, username: query.from.username, firstName: query.from.first_name };
+    const msgLike = { message_thread_id: query.message.message_thread_id };
+    await performKick(query.message.chat.id, msgLike, attacker, target, 0);
+    return;
+  }
+
   if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
 
   const [action, attackerIdStr, victimIdStr, weaponKey] = data.split(':');
