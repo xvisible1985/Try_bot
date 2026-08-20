@@ -406,6 +406,32 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
 
+// One-time (per boot, but INSERT OR IGNORE so it never overwrites a
+// known_users row already populated live from a real message — see the
+// main message handler) backfill for /find: known_users only starts
+// recording going forward from whenever this feature first deployed, so
+// without this, every fighter who existed before that point but hasn't
+// messaged since shows up as a bare numeric id. Pulls whichever username
+// happens to be attached to that user_id in any older per-feature table
+// that already stored one before known_users existed — exact source
+// doesn't matter, any valid username is equally good for display.
+db.exec(`
+  INSERT OR IGNORE INTO known_users (user_id, username, first_name, last_seen_at)
+  SELECT user_id, username, NULL, 0
+  FROM (
+    SELECT user_id, username FROM mutes WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM animals WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM fishers WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM ramzans WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM estets WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM podhalims WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM molchuns WHERE username IS NOT NULL
+    UNION ALL SELECT user_id, username FROM dimoniacs WHERE username IS NOT NULL
+    UNION ALL SELECT owner_user_id, owner_username FROM weapon_ownership WHERE owner_username IS NOT NULL
+  )
+  GROUP BY user_id
+`);
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
@@ -1311,46 +1337,38 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
 
 // /find — lists every fighter that has ever appeared in user_health (has
 // hit /kick or /hide at least once), by known_users' cached display
-// name, with their current hidden status. Each fighter also gets an
-// inline "attack" button, always a bare-handed swing (slot 0) regardless
-// of who clicks it — the clicker is the attacker, not whoever ran /find
-// (see the find_kick branch in the callback_query handler below), which
-// is why the button carries no attacker id in its callback_data.
+// name, with their current hidden status — чулан occupants listed first.
 bot.onText(/\/find\b/, (msg) => {
   const fighters = db.prepare('SELECT user_id FROM user_health').all();
   if (!fighters.length) {
     bot.sendMessage(msg.chat.id, 'Пока никто не дрался и не прятался.', threadOpts(msg)).catch(() => {});
     return;
   }
-  const lines = ['⚔️ Бойцы:'];
-  const buttons = [];
+  // Icons instead of spelled-out status, sorted чулан-occupants first —
+  // isHidden also lazily finalizes anyone whose session has actually
+  // expired into pvp_stats before it's used for sorting/display.
+  const hiddenLines = [];
+  const visibleLines = [];
   for (const { user_id } of fighters) {
     const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(user_id);
     const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
     if (isHidden(user_id)) {
       const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(user_id);
-      lines.push(`🚪 ${label} — в чулане (осталось ${formatExpire(row.hidden_until)})`);
+      hiddenLines.push(`🚪 ${label} (ещё ${formatExpire(row.hidden_until)})`);
     } else {
-      lines.push(`🟢 ${label} — не прячется`);
+      visibleLines.push(`⚔️ ${label}`);
     }
-    buttons.push([{ text: `👊 ${label}`, callback_data: `find_kick:${user_id}` }]);
   }
-  bot.sendMessage(
-    msg.chat.id,
-    lines.join('\n'),
-    threadOpts(msg, { reply_markup: { inline_keyboard: buttons } })
-  ).catch(() => {});
+  const lines = ['Бойцы:', ...hiddenLines, ...visibleLines];
+  bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
-// Shared by both attack entry points: /kick's own onText handler (below,
-// after parsing a target and weapon slot from the command text) and the
-// /find roster's inline "attack" buttons (see the find_kick branch in the
-// callback_query handler further down, which always attacks bare-handed
-// — slot 0 — since a button click carries no room for typing a slot
-// number). Everything from here on is entry-point-agnostic: it only
-// needs a chat to post in, a msg-like object for threadOpts (just
-// .message_thread_id), and plain {id, username, firstName} attacker/
-// target descriptors — never the raw Telegram message object itself,
+// All of /kick's actual combat logic, factored out of the onText handler
+// below (which only parses a target and weapon slot from the command
+// text) so it depends on plain values instead of the raw Telegram
+// message object: a chat to post in, a msg-like object for threadOpts
+// (just .message_thread_id), and {id, username, firstName} attacker/
+// target descriptors.
 // since a button click has no such thing for the clicker.
 async function performKick(chatId, msgLike, attacker, target, slot) {
   const actorLabel = attacker.username ? `@${attacker.username}` : attacker.firstName;
@@ -1581,8 +1599,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
 // real weapons — /kick1/2/3 picks a specific held weapon by slot (see
 // pickWeaponForAttacker), falling back to bare-handed if that slot is
 // empty. match[1] is the slot digit, match[2] is the target text. All
-// the actual combat logic lives in performKick above, shared with
-// /find's inline attack buttons (see the find_kick callback branch).
+// the actual combat logic lives in performKick above.
 bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   const slot = match[1] ? parseInt(match[1], 10) : 0;
 
@@ -2571,7 +2588,7 @@ bot.onText(/\/help\b/, (msg) => {
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление — 1 за 20 мин; пауза 1 мин действует отдельно на каждое оружие/на голые руки; ровно 100/100 — сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
-    '/find — список всех бойцов и их статус (прячется/нет), у каждого кнопка для мгновенной атаки голыми руками (бьёт тот, кто нажал кнопку, а не автор /find)',
+    '/find — список всех бойцов: 🚪 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
@@ -2679,26 +2696,6 @@ bot.on('message', (msg) => console.log('сообщение от:', msg.from?.use
 // stale snapshot.
 bot.on('callback_query', async (query) => {
   const data = query.data || '';
-
-  // /find's per-fighter attack button — always a bare-handed swing (slot
-  // 0), attacker is whoever clicked (query.from), not whoever ran /find.
-  // Reuses performKick exactly like /kick's own text-command handler; no
-  // attacker id is encoded in callback_data since anyone may click.
-  if (data.startsWith('find_kick:')) {
-    const targetId = Number(data.split(':')[1]);
-    bot.answerCallbackQuery(query.id).catch(() => {});
-    const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(targetId);
-    const target = {
-      id: targetId,
-      username: known ? known.username : null,
-      firstName: known && known.first_name ? known.first_name : `игрок ${targetId}`,
-    };
-    const attacker = { id: query.from.id, username: query.from.username, firstName: query.from.first_name };
-    const msgLike = { message_thread_id: query.message.message_thread_id };
-    await performKick(query.message.chat.id, msgLike, attacker, target, 0);
-    return;
-  }
-
   if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
 
   const [action, attackerIdStr, victimIdStr, weaponKey] = data.split(':');
