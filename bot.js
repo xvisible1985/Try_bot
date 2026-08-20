@@ -346,6 +346,17 @@ db.exec(`
     owner_username TEXT
   )
 `);
+// Natural-0 fumble drop (see /kick below): owner_type briefly becomes
+// 'dropped' (owner_user_id repurposed to mean "who dropped it, so they
+// can't immediately re-pick-up their own weapon" rather than "who holds
+// it") with dropped_chat_id marking which chat it's lying in until the
+// pickup listener in the main message handler hands it to whoever writes
+// next there. A 'dropped' row matches neither 'human' nor 'troll' in any
+// existing owner_type filter, so it's automatically excluded from
+// getWeaponsFor/pickWeaponForAttacker/maybeStealWeapon for the duration.
+try {
+  db.exec('ALTER TABLE weapon_ownership ADD COLUMN dropped_chat_id INTEGER');
+} catch {}
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'ANOKI5', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('scissors', 'AliyaKuzAli', 'human', NULL, NULL)").run();
@@ -1246,13 +1257,38 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
     `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100`,
     threadOpts(msg)
   ).catch(() => {});
-  if (!success) return;
+  if (!success) {
+    // Natural 0 with a real weapon in hand — fumble drops it right there
+    // in this chat. owner_type = 'dropped' takes it out of everyone's
+    // getWeaponsFor (so it stops counting for /kickN or /me) until the
+    // pickup listener in the main message handler hands it to whoever
+    // writes next (see "--- Filter muted & animal messages ---" below).
+    // Bare-handed misses (weapon.key === null) have nothing to drop.
+    if (roll === 0 && weapon.key) {
+      db.prepare(
+        "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
+      ).run(msg.from.id, msg.chat.id, weapon.key);
+      await bot.sendMessage(
+        msg.chat.id,
+        `😱 ${actorLabel} так мажет, что ${WEAPON_DEFS[weapon.key].name} вылетает из рук! Кто первым напишет что-нибудь в чат — подберёт.`,
+        threadOpts(msg)
+      ).catch(() => {});
+    }
+    return;
+  }
 
   const targetHealthBefore = getUserHealth(target.id);
   let targetHealthAfter;
   let hole = null;
 
-  if (weapon.key === 'carrot') {
+  if (roll === 100) {
+    targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, targetHealthBefore.health);
+    await bot.sendMessage(
+      msg.chat.id,
+      `💯 СОКРУШИТЕЛЬНЫЙ УДАР! ${actorLabel} сносит ${targetLabel} всё здоровье разом (${targetHealthBefore.health} -> ${targetHealthAfter})!`,
+      threadOpts(msg)
+    ).catch(() => {});
+  } else if (weapon.key === 'carrot') {
     const holes = ['ear', 'nose', 'mouth', 'dick', 'ass'];
     hole = holes[Math.floor(Math.random() * holes.length)];
     const rawDmg = Math.floor(Math.random() * 20) + 1;
@@ -1278,13 +1314,6 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
       targetHealthAfter = damageHuman(target.id, msg.chat.id, target.username || target.firstName, targetHealthBefore.health);
       await bot.sendMessage(msg.chat.id, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msg)).catch(() => {});
     }
-
-    const animalType = Math.random() < 0.5 ? 'cat' : 'fox';
-    applyTimedAnimal(target.id, msg.chat.id, target.username || target.firstName, animalType);
-    const animalMsg = animalType === 'cat'
-      ? `🐱 ${targetLabel} на 20 минут теперь мяукает как кошка!`
-      : `🦊 ${targetLabel} на 20 минут теперь рычит как лиса!`;
-    await bot.sendMessage(msg.chat.id, animalMsg, threadOpts(msg)).catch(() => {});
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
     const dmg = Math.round(rawDmg * weapon.multiplier);
@@ -1294,6 +1323,19 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
       `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
       threadOpts(msg)
     ).catch(() => {});
+  }
+
+  // Cat/fox applies on any successful carrot hit regardless of which
+  // branch produced targetHealthAfter (a hole roll above, or a natural
+  // 100 bypassing hole-selection entirely) — pulled out of the carrot
+  // branch itself so the nat-100 path doesn't have to duplicate it.
+  if (weapon.key === 'carrot') {
+    const animalType = Math.random() < 0.5 ? 'cat' : 'fox';
+    applyTimedAnimal(target.id, msg.chat.id, target.username || target.firstName, animalType);
+    const animalMsg = animalType === 'cat'
+      ? `🐱 ${targetLabel} на 20 минут теперь мяукает как кошка!`
+      : `🦊 ${targetLabel} на 20 минут теперь рычит как лиса!`;
+    await bot.sendMessage(msg.chat.id, animalMsg, threadOpts(msg)).catch(() => {});
   }
 
   if (weapon.key === 'scissors') {
@@ -1309,7 +1351,7 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
     await bot.sendMessage(msg.chat.id, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msg)).catch(() => {});
   }
 
-  if (roll >= getCritThreshold(msg.from.id) && !(weapon.key === 'carrot' && hole === 'ass')) {
+  if (roll !== 100 && roll >= getCritThreshold(msg.from.id) && !(weapon.key === 'carrot' && hole === 'ass')) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
     const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
@@ -1958,6 +2000,23 @@ bot.on('message', async (msg) => {
   if (msg.from.username) {
     db.prepare("UPDATE weapon_ownership SET owner_user_id = ?, owner_username = ? WHERE seed_username = ? AND owner_type = 'human' AND owner_user_id IS NULL").run(msg.from.id, msg.from.username, msg.from.username);
   }
+  // Natural-0 fumble pickup (see /kick's drop above): first message in the
+  // drop's chat from anyone but the dropper claims it. Runs unconditionally,
+  // same reasoning as the resolution UPDATE above — a muted/fisher/molchun
+  // user's message still counts as "writing something in the chat".
+  const droppedHere = db.prepare(
+    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'dropped' AND dropped_chat_id = ? AND owner_user_id != ?"
+  ).all(msg.chat.id, msg.from.id);
+  for (const row of droppedHere) {
+    const changed = db.prepare(
+      "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ?, dropped_chat_id = NULL WHERE weapon_key = ? AND owner_type = 'dropped' AND dropped_chat_id = ?"
+    ).run(msg.from.id, msg.from.username, row.weapon_key, msg.chat.id);
+    if (changed.changes > 0) {
+      const def = WEAPON_DEFS[row.weapon_key];
+      const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
+    }
+  }
   // must run first, unconditionally — otherwise muted/fisher/molchun users' messages never enter the recency buffer, breaking cough-targeting later
   const virusNick = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const virusPriorRecent = getVirusRecent(msg.chat.id);
@@ -2306,7 +2365,7 @@ bot.onText(/\/help\b/, (msg) => {
     '',
     'PvP:',
     '/me — здоровье, энергия, травма и укрытие',
-    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление — 1 за 20 мин; пауза 1 мин действует отдельно на каждое оружие/на голые руки)',
+    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление — 1 за 20 мин; пауза 1 мин действует отдельно на каждое оружие/на голые руки; ровно 100/100 — сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает)',
     '/hide [часы] — спрятаться от /kick на N часов (по умолчанию 1); тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
