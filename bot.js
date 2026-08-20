@@ -967,59 +967,76 @@ function damageHuman(userId, chatId, username, damage) {
   return row.health;
 }
 
-// In-memory per-user cooldown — a rate limiter doesn't need to survive a
-// restart, same idiom as troll-bot's own commandCooldowns. Unlike that one
-// (which drops repeats silently), /kick's cooldown is meant to be visible —
-// returns seconds remaining (0 means allowed, and stamps the attempt).
+// In-memory per-user-per-weapon cooldown — a rate limiter doesn't need to
+// survive a restart, same idiom as troll-bot's own commandCooldowns.
+// Unlike that one (which drops repeats silently), /kick's cooldown is
+// meant to be visible — returns seconds remaining (0 means allowed, and
+// stamps the attempt). Keyed by weapon (weaponKey, or 'bare' for the
+// unarmed fallback) rather than just userId: the pause is "on the
+// weapon", so swinging a different one you hold — or going bare-handed —
+// isn't gated by a swing you just took with another.
 const pvpCooldowns = new Map();
 const PVP_COOLDOWN_MS = 60 * 1000;
-function checkPvpCooldown(userId) {
-  const last = pvpCooldowns.get(userId);
+function checkPvpCooldown(userId, weaponKey) {
+  const cooldownKey = `${userId}:${weaponKey || 'bare'}`;
+  const last = pvpCooldowns.get(cooldownKey);
   const elapsed = last ? Date.now() - last : Infinity;
   if (elapsed < PVP_COOLDOWN_MS) return Math.ceil((PVP_COOLDOWN_MS - elapsed) / 1000);
-  pvpCooldowns.set(userId, Date.now());
+  pvpCooldowns.set(cooldownKey, Date.now());
   return 0;
 }
 
 // Weapon keys currently held by a given owner — 0, 1, or 2 rows (a holder
 // can end up with both over time via maybeStealWeapon). ownerUserId is
-// ignored for ownerType 'troll' (there's only ever one troll).
+// ignored for ownerType 'troll' (there's only ever one troll). ORDER BY
+// rowid gives a stable "acquisition order" (rowid is assigned once, at
+// each weapon's original seed INSERT, and never changes across the
+// UPDATEs that move ownership around) — this is what /kick1/2/3 index
+// into, and what /me numbers its weapon list by.
 function getWeaponsFor(ownerType, ownerUserId) {
   return ownerType === 'troll'
-    ? db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'troll'").all()
-    : db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?").all(ownerUserId);
+    ? db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'troll' ORDER BY rowid").all()
+    : db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? ORDER BY rowid").all(ownerUserId);
 }
 
-// Picks the weapon for one swing: a real one if the attacker holds any
-// (random pick if they hold both), otherwise a random cosmetic word from
-// fallbackWeapons with multiplier 1 — today's flavor-only behavior,
-// unchanged for anyone who's never touched a real weapon. Returns
+// Picks the weapon for one swing at a specific "slot": slot 0 always
+// means bare-handed (a random cosmetic word from fallbackWeapons,
+// multiplier 1) even if the attacker holds real weapons — /kick with no
+// number. slot 1/2/3 means the Nth real weapon the attacker currently
+// holds, in getWeaponsFor's stable acquisition order — /kick1/2/3. Falls
+// back to bare-handed if they don't hold that many. Returns
 // { key, text, multiplier } — key is null for the cosmetic fallback.
-function pickWeaponForAttacker(ownerType, ownerUserId, fallbackWeapons) {
-  const owned = getWeaponsFor(ownerType, ownerUserId);
-  if (owned.length > 0) {
-    const key = pick(owned.map(row => row.weapon_key));
-    const def = WEAPON_DEFS[key];
-    return { key, text: def.instrumental, multiplier: def.multiplier };
+function pickWeaponForAttacker(ownerType, ownerUserId, slot, fallbackWeapons) {
+  if (slot > 0) {
+    const owned = getWeaponsFor(ownerType, ownerUserId);
+    const row = owned[slot - 1];
+    if (row) {
+      const def = WEAPON_DEFS[row.weapon_key];
+      return { key: row.weapon_key, text: def.instrumental, multiplier: def.multiplier };
+    }
   }
   return { key: null, text: pick(fallbackWeapons), multiplier: 1 };
 }
 
-// 5% chance to steal the target's currently-held real weapon after a crit
-// lands on them — call this right after every applyInjury(...) against a
-// human. attacker is {type:'human', userId, username, firstName} or
-// {type:'troll'}. Returns the stolen weapon_key, or null if nothing was
-// stolen (missed the 5% roll, or the target didn't hold a real weapon).
+// 5% chance to steal one of the target's currently-held real weapons
+// after a crit lands on them — call this right after every
+// applyInjury(...) against a human. attacker is {type:'human', userId,
+// username, firstName} or {type:'troll'}. If the target holds more than
+// one weapon, which one gets stolen is random (this is the silent,
+// no-choice counterpart to the knockout-steal-buttons offer below,
+// which lets the attacker pick). Returns the stolen weapon_key, or null
+// if nothing was stolen (missed the 5% roll, or the target held none).
 function maybeStealWeapon(targetUserId, attacker) {
   if (Math.random() >= 0.05) return null;
-  const row = db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?").get(targetUserId);
-  if (!row) return null;
+  const rows = db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?").all(targetUserId);
+  if (!rows.length) return null;
+  const weaponKey = pick(rows.map(row => row.weapon_key));
   if (attacker.type === 'troll') {
-    db.prepare("UPDATE weapon_ownership SET owner_type = 'troll', owner_user_id = NULL, owner_username = NULL WHERE weapon_key = ?").run(row.weapon_key);
+    db.prepare("UPDATE weapon_ownership SET owner_type = 'troll', owner_user_id = NULL, owner_username = NULL WHERE weapon_key = ?").run(weaponKey);
   } else {
-    db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?").run(attacker.userId, attacker.username || attacker.firstName, row.weapon_key);
+    db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?").run(attacker.userId, attacker.username || attacker.firstName, weaponKey);
   }
-  return row.weapon_key;
+  return weaponKey;
 }
 
 // Starts (or refreshes) a 20-minute bleed on a scissors hit — see the
@@ -1093,14 +1110,16 @@ bot.onText(/\/me\b/, (msg) => {
     lines.push(`🩸 Истекаешь кровью: ещё ~${minutesLeft} мин`);
   }
 
-  for (const row of getWeaponsFor('human', msg.from.id)) {
+  const heldWeapons = getWeaponsFor('human', msg.from.id);
+  heldWeapons.forEach((row, i) => {
     const def = WEAPON_DEFS[row.weapon_key];
+    const slotTag = `/kick${i + 1}`;
     if (row.weapon_key === 'carrot') {
-      lines.push(`${def.emoji} Ты держишь ${def.name}: случайное место попадания, от лечения до мгновенного нокаута`);
+      lines.push(`${def.emoji} ${slotTag} — ${def.name}: случайное место попадания, от лечения до мгновенного нокаута`);
     } else {
-      lines.push(`${def.emoji} Ты держишь ${def.name}: урон ×${def.multiplier}`);
+      lines.push(`${def.emoji} ${slotTag} — ${def.name}: урон ×${def.multiplier}`);
     }
-  }
+  });
 
   const healthRow = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(msg.from.id);
   if (healthRow && healthRow.hidden_until && healthRow.hidden_until * 1000 > Date.now()) {
@@ -1145,8 +1164,13 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
 // Target resolution: reply-to-message first, else a best-effort
 // bot.getChat('@handle') — this bot has no relationships table to look
 // usernames up against locally, unlike troll-bot's "Тролль Фас".
-bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+// /kick (no number) always swings bare-handed, even for someone holding
+// real weapons — /kick1/2/3 picks a specific held weapon by slot (see
+// pickWeaponForAttacker), falling back to bare-handed if that slot is
+// empty. match[1] is the slot digit, match[2] is the target text.
+bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const slot = match[1] ? parseInt(match[1], 10) : 0;
 
   let target = null;
   if (msg.reply_to_message && msg.reply_to_message.from) {
@@ -1155,8 +1179,8 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
       username: msg.reply_to_message.from.username,
       firstName: msg.reply_to_message.from.first_name,
     };
-  } else if (match[1]) {
-    const handle = match[1].replace(/^@/, '');
+  } else if (match[2]) {
+    const handle = match[2].replace(/^@/, '');
     try {
       const chat = await bot.getChat('@' + handle);
       target = { id: chat.id, username: chat.username, firstName: chat.first_name };
@@ -1191,11 +1215,17 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     bot.sendMessage(msg.chat.id, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msg)).catch(() => {});
     return;
   }
-  const cooldownRemaining = checkPvpCooldown(msg.from.id);
+
+  // Weapon is resolved before the cooldown check since the cooldown is
+  // keyed by weapon (see checkPvpCooldown) — which bucket applies depends
+  // on what this swing actually turns out to be (including the
+  // empty-slot-falls-back-to-bare-handed case).
+  const weapon = pickWeaponForAttacker('human', msg.from.id, slot, PVP_WEAPONS);
+  const cooldownRemaining = checkPvpCooldown(msg.from.id, weapon.key);
   if (cooldownRemaining > 0) {
     bot.sendMessage(
       msg.chat.id,
-      `${actorLabel}, нельзя бить так часто — подожди ещё ${cooldownRemaining} сек.`,
+      `${actorLabel}, нельзя бить так часто ${weapon.key ? WEAPON_DEFS[weapon.key].instrumental : 'голыми руками'} — подожди ещё ${cooldownRemaining} сек.`,
       threadOpts(msg)
     ).catch(() => {});
     return;
@@ -1207,7 +1237,6 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   }
   consumeEnergy(msg.from.id);
 
-  const weapon = pickWeaponForAttacker('human', msg.from.id, PVP_WEAPONS);
   const bodyPart = pick(PVP_BODY_PARTS);
   const roll = Math.floor(Math.random() * 101);
   const success = roll >= getHitThreshold(target.id);
@@ -1307,24 +1336,32 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   // above, not a replacement (see docs/superpowers/specs/
   // 2026-08-19-knockout-steal-buttons-design.md). Looked up live rather
   // than from a value cached earlier in this handler: if the crit
-  // block's own maybeStealWeapon just moved the weapon to msg.from.id,
-  // this SELECT correctly finds nothing left on target.id, so no
-  // redundant "steal the weapon you already just got" offer appears.
+  // block's own maybeStealWeapon just moved a weapon to msg.from.id,
+  // this SELECT correctly finds it gone from target.id, so no redundant
+  // "steal the weapon you already just got" button appears for it. If
+  // the victim holds more than one weapon, one button per weapon lets
+  // the attacker choose which single one to take (see the callback
+  // handler below) rather than grabbing an arbitrary one.
   if (targetHealthAfter === 0) {
-    const heldWeapon = db.prepare(
-      "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?"
-    ).get(target.id);
-    if (heldWeapon) {
-      const def = WEAPON_DEFS[heldWeapon.weapon_key];
+    const heldWeapons = getWeaponsFor('human', target.id);
+    if (heldWeapons.length > 0) {
+      const defs = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key]);
+      const itemsText = defs.length === 1
+        ? defs[0].accusative
+        : defs.slice(0, -1).map(d => d.accusative).join(', ') + ' и ' + defs[defs.length - 1].accusative;
+      const question = defs.length === 1 ? 'Забрать?' : 'Что забрать?';
       await bot.sendMessage(
         msg.chat.id,
-        `${targetLabel} в отключке — с ним ${def.accusative}. Забрать?`,
+        `${targetLabel} в отключке — с ним ${itemsText}. ${question}`,
         threadOpts(msg, {
           reply_markup: {
-            inline_keyboard: [[
-              { text: '🗡 Отобрать оружие', callback_data: `steal_yes:${msg.from.id}:${target.id}` },
-              { text: '🤝 Оставить', callback_data: `steal_no:${msg.from.id}` },
-            ]],
+            inline_keyboard: [
+              ...heldWeapons.map(row => [{
+                text: `🗡 Забрать ${WEAPON_DEFS[row.weapon_key].accusative}`,
+                callback_data: `steal_yes:${msg.from.id}:${target.id}:${row.weapon_key}`,
+              }]),
+              [{ text: '🤝 Оставить', callback_data: `steal_no:${msg.from.id}` }],
+            ],
           },
         })
       ).catch(() => {});
@@ -2269,7 +2306,7 @@ bot.onText(/\/help\b/, (msg) => {
     '',
     'PvP:',
     '/me — здоровье, энергия, травма и укрытие',
-    '/kick @юзернейм (или ответом) — ударить участника чата (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить; тратит 1 энергию из 10, восстановление — 1 за 20 мин)',
+    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20, критический удар — травма на 2-24 часа, 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление — 1 за 20 мин; пауза 1 мин действует отдельно на каждое оружие/на голые руки)',
     '/hide [часы] — спрятаться от /kick на N часов (по умолчанию 1); тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки; сама команда — раз в 20 минут',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
@@ -2380,7 +2417,7 @@ bot.on('callback_query', async (query) => {
   const data = query.data || '';
   if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
 
-  const [action, attackerIdStr, victimIdStr] = data.split(':');
+  const [action, attackerIdStr, victimIdStr, weaponKey] = data.split(':');
   const attackerId = Number(attackerIdStr);
   if (query.from.id !== attackerId) {
     return bot.answerCallbackQuery(query.id, { text: 'Это не твой трофей', show_alert: true }).catch(() => {});
@@ -2398,12 +2435,16 @@ bot.on('callback_query', async (query) => {
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
+  // weaponKey pins down exactly which button was pressed — re-verify live
+  // that it's still on the victim (not moved by a crit-steal or a
+  // different button click in the meantime) rather than trusting the
+  // snapshot the offer was built from.
   const victimId = Number(victimIdStr);
   const row = db.prepare(
-    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?"
-  ).get(victimId);
+    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? AND weapon_key = ?"
+  ).get(victimId, weaponKey);
   if (!row) {
-    await bot.editMessageText('Оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
+    await bot.editMessageText('Этого оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
