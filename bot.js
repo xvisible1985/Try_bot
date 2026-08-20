@@ -623,6 +623,25 @@ function isMuted(userId) {
   return true;
 }
 
+// Whether an attacker is still within their post-knockout mute (see
+// damageHuman's muteUser(..., 'драка', 30 min) call below). /kick used
+// to gate on health === 0 directly, but healthRegenTick's hourly
+// trickle can bring health back above 0 within as little as 10 minutes
+// — well before the intended 30-minute "в отключке" window ends —
+// which let a just-regenerated attacker swing again with no warning.
+// Checking the mute row (by reason, not by admin mutes in general) is
+// the actual source of truth for "still down from a fight" regardless
+// of how far health has already regenerated.
+function isKnockedOut(userId) {
+  const row = db.prepare('SELECT muted_by_name, expires_at FROM mutes WHERE user_id = ?').get(userId);
+  if (!row || row.muted_by_name !== 'драка') return false;
+  if (row.expires_at && row.expires_at * 1000 < Date.now()) {
+    db.prepare('DELETE FROM mutes WHERE user_id = ?').run(userId);
+    return false;
+  }
+  return true;
+}
+
 function muteUser(userId, chatId, username, byId, byName, durationMs) {
   const expiresAt = durationMs ? Math.floor((Date.now() + durationMs) / 1000) : null;
   db.prepare(
@@ -1164,7 +1183,7 @@ bot.onText(/\/kick(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     return;
   }
   const attackerHealth = getUserHealth(msg.from.id);
-  if (attackerHealth.health === 0) {
+  if (isKnockedOut(msg.from.id)) {
     bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msg)).catch(() => {});
     return;
   }
