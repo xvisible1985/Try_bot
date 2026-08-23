@@ -293,6 +293,16 @@ db.exec(`
     first_tracked_at INTEGER NOT NULL
   )
 `);
+// Four persistent combat attributes plus lifetime XP (see
+// docs/superpowers/specs/2026-08-24-combat-attributes-design.md).
+// Available (unspent) points are never stored separately — they're
+// always computed live as floor(xp/100) - (sum of the four columns
+// below), so the count can never drift out of sync with xp.
+for (const [column, def] of [['accuracy', 'INTEGER NOT NULL DEFAULT 0'], ['strength', 'INTEGER NOT NULL DEFAULT 0'], ['agility', 'INTEGER NOT NULL DEFAULT 0'], ['endurance', 'INTEGER NOT NULL DEFAULT 0'], ['xp', 'INTEGER NOT NULL DEFAULT 0']]) {
+  try {
+    db.exec(`ALTER TABLE pvp_stats ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
 
 // Lightweight username/first-name cache keyed by user_id, refreshed on
 // every incoming message (see the main message handler below) — nothing
@@ -952,6 +962,31 @@ const PVP_INJURY_REFUSAL_TEXT = {
   head: 'твоя голова ещё болит, не до драки!',
 };
 
+// Combat attribute formulas (see docs/superpowers/specs/
+// 2026-08-24-combat-attributes-design.md) — named constants so these
+// are trivial to retune later; they're honest guesses, not
+// balance-tested numbers.
+const ACCURACY_PER_POINT = 1;             // pp off the hit threshold, per point
+const HEAD_INJURY_ACCURACY_PENALTY = 10;  // pp added back for the attacker's own head injury
+const STRENGTH_DAMAGE_PER_POINT = 0.02;   // +2% damage per point, multiplicative
+const ARM_INJURY_DAMAGE_MULT = 0.9;       // -10% damage, multiplicative, for the attacker's own arm injury
+const BASE_DODGE_CHANCE = 50;             // %
+const AGILITY_DODGE_PER_POINT = 0.5;      // pp per point of the DEFENDER's agility
+const MAX_DODGE_CHANCE = 90;              // hard cap so nothing is ever unhittable
+const LEG_INJURY_DODGE_PENALTY = 10;      // pp off dodge, for the DEFENDER's own leg injury
+const AGILITY_COOLDOWN_PER_POINT = 0.005; // -0.5% off the PvP cooldown per point of the ATTACKER's agility
+const ENDURANCE_REGEN_SPEEDUP_PER_POINT = 0.01; // -1% off the energy regen interval per point
+const MIN_ENERGY_REGEN_INTERVAL_SECONDS = 300;  // floor at 5 min (base is 20 min)
+const XP_PER_HIT = 1;
+const XP_PER_CRIT = 5;
+const XP_PER_NAT100 = 15;
+
+// 20-minute чулан lockout for anyone who actually lands a hit (see
+// /hide below) — in-memory, same idiom as hideCooldowns/pvpCooldowns,
+// doesn't need to survive a restart.
+const combatLockouts = new Map();
+const NO_HIDE_AFTER_ATTACK_MS = 20 * 60 * 1000;
+
 // Static per-weapon flavor/multiplier for the three real, stealable
 // weapons (see weapon_ownership above for who currently holds them).
 // Duplicated identically in troll-bot's bot.js — same idiom as
@@ -1035,7 +1070,7 @@ function ensureStatsRow(userId) {
 }
 function getStats(userId) {
   ensureStatsRow(userId);
-  return db.prepare('SELECT crit_count, injuries_dealt, hidden_seconds, first_tracked_at FROM pvp_stats WHERE user_id = ?').get(userId);
+  return db.prepare('SELECT crit_count, injuries_dealt, hidden_seconds, first_tracked_at, accuracy, strength, agility, endurance, xp FROM pvp_stats WHERE user_id = ?').get(userId);
 }
 function recordCrit(userId) {
   ensureStatsRow(userId);
@@ -1110,11 +1145,15 @@ function damageHuman(userId, chatId, username, damage) {
 // isn't gated by a swing you just took with another.
 const pvpCooldowns = new Map();
 const PVP_COOLDOWN_MS = 60 * 1000;
-function checkPvpCooldown(userId, weaponKey) {
+const MIN_PVP_COOLDOWN_MS = PVP_COOLDOWN_MS * 0.2; // floor at 20% of base (12s) regardless of agility
+// cooldownMs is now supplied by the caller (see performKick) since it
+// depends on the attacker's own agility — this function stays a pure
+// rate limiter, no attribute lookups here.
+function checkPvpCooldown(userId, weaponKey, cooldownMs) {
   const cooldownKey = `${userId}:${weaponKey || 'bare'}`;
   const last = pvpCooldowns.get(cooldownKey);
   const elapsed = last ? Date.now() - last : Infinity;
-  if (elapsed < PVP_COOLDOWN_MS) return Math.ceil((PVP_COOLDOWN_MS - elapsed) / 1000);
+  if (elapsed < cooldownMs) return Math.ceil((cooldownMs - elapsed) / 1000);
   pvpCooldowns.set(cooldownKey, Date.now());
   return 0;
 }
