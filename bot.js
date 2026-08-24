@@ -519,6 +519,21 @@ runOnce('2026-08-24-attributes-reset-plus-300xp', () => {
   db.exec('UPDATE pvp_stats SET accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = xp + 300');
 });
 
+// Correction: the additive +300 above stacked on top of whatever real
+// XP some fighters had already earned by playing /kick in the gap
+// between the fresh-start reset and this migration's own deploy, so
+// the more active players ended up above the intended flat 300 - not a
+// double-applied migration (each of the runOnce migrations above is
+// still confirmed to fire exactly once), just additive stacking on
+// real gameplay progress that happened at an inconvenient moment. This
+// is a flat SET, not additive, specifically to give everyone the exact
+// same fair 300-XP/0-spent starting line regardless of whatever
+// inconsistent state they're currently in — real battle XP earned
+// AFTER this point accrues normally on top of it, same as always.
+runOnce('2026-08-24-fix-attributes-300xp-flat', () => {
+  db.exec('UPDATE pvp_stats SET accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = 300');
+});
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
