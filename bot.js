@@ -1315,8 +1315,9 @@ bot.onText(/\/me\b/, (msg) => {
   lines.push(`🏃 Вне чулана: ${formatDuration(visibleSeconds)}`);
 
   const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+  const xpToNext = stats.xp % 100 === 0 ? 0 : 100 - (stats.xp % 100);
   lines.push(`📊 Точность: ${stats.accuracy} | Сила: ${stats.strength} | Ловкость: ${stats.agility} | Выносливость: ${stats.endurance}`);
-  lines.push(`✨ Опыт: ${stats.xp} (ещё ${100 - (stats.xp % 100)} до следующего очка)${available > 0 ? ` — доступно очков: ${available}` : ''}`);
+  lines.push(`✨ Опыт: ${stats.xp} (ещё ${xpToNext} до следующего очка)${available > 0 ? ` — доступно очков: ${available}` : ''}`);
 
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
