@@ -491,6 +491,24 @@ runOnce('2026-08-24-reset-combat-stats', () => {
   );
 });
 
+// Full fresh start for every registered воин, requested after more
+// testing had already piled up health/injury/XP state since the reset
+// above: health and energy restored to max, every injury cleared, any
+// mute caused by a combat knockout lifted (admin-issued mutes, any
+// other muted_by_name, are untouched), and every pvp_stats counter
+// zeroed again. is_warrior itself is left alone — everyone stays a
+// registered воин, this only wipes accumulated progress, not
+// registration, so nobody needs to run /warrior again.
+runOnce('2026-08-24-full-fresh-start', () => {
+  db.exec('UPDATE user_health SET health = max_health, energy = max_energy');
+  db.exec('DELETE FROM injuries');
+  db.exec("DELETE FROM mutes WHERE muted_by_name = 'драка'");
+  db.exec(
+    "UPDATE pvp_stats SET crit_count = 0, injuries_dealt = 0, hidden_seconds = 0, " +
+    "accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = 0, first_tracked_at = strftime('%s','now')"
+  );
+});
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
