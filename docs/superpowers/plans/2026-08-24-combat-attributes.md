@@ -613,7 +613,7 @@ git push
 
 **Note on line numbers:** Tasks 1-2 shifted lines earlier in the file. Locate by surrounding text.
 
-- [ ] **Step 1: Add the lockout check right after the hours-validation check**
+- [x] **Step 1: Add the lockout check right after the hours-validation check**
 
 Find:
 
@@ -650,12 +650,12 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
   const last = hideCooldowns.get(msg.from.id);
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
