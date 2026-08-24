@@ -303,15 +303,6 @@ for (const [column, def] of [['accuracy', 'INTEGER NOT NULL DEFAULT 0'], ['stren
     db.exec(`ALTER TABLE pvp_stats ADD COLUMN ${column} ${def}`);
   } catch {}
 }
-// Starting baseline for these 4 attributes moved from 0 to 1 (see
-// ensureStatsRow) — bumps anyone still sitting at the old default up
-// to the new one. Self-limiting and safe to run on every boot: once a
-// row's column is 1 it no longer matches `= 0`, and nothing in the
-// game can ever spend a point back down to exactly 0, so this can
-// never re-fire for the same row twice.
-for (const column of ['accuracy', 'strength', 'agility', 'endurance']) {
-  db.prepare(`UPDATE pvp_stats SET ${column} = 1 WHERE ${column} = 0`).run();
-}
 
 // Lightweight username/first-name cache keyed by user_id, refreshed on
 // every incoming message (see the main message handler below) — nothing
@@ -1070,11 +1061,7 @@ function consumeEnergy(userId) {
 // just a timestamp comparison (same idiom as getUserInjury's expiry check,
 // minus the DELETE since there's no separate row to remove).
 function ensureStatsRow(userId) {
-  // New fighters start with 1 in every attribute, not 0 — the column
-  // DEFAULT stays 0 (already baked into the ALTER from the original
-  // migration, can't retroactively change), so this INSERT sets the
-  // real starting values explicitly instead of relying on it.
-  db.prepare('INSERT OR IGNORE INTO pvp_stats (user_id, first_tracked_at, accuracy, strength, agility, endurance) VALUES (?, ?, 1, 1, 1, 1)').run(userId, Math.floor(Date.now() / 1000));
+  db.prepare('INSERT OR IGNORE INTO pvp_stats (user_id, first_tracked_at) VALUES (?, ?)').run(userId, Math.floor(Date.now() / 1000));
 }
 function getStats(userId) {
   ensureStatsRow(userId);
