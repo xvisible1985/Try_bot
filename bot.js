@@ -1457,28 +1457,62 @@ const LEVELUP_STAT_NAMES = {
   'выносливость': 'endurance', 'вын': 'endurance',
 };
 const LEVELUP_STAT_LABELS = { accuracy: 'точность', strength: 'сила', agility: 'ловкость', endurance: 'выносливость' };
+
+// Shared by /levelup's own text-argument path and its inline-button
+// click handler (see the callback_query branch further below) — spends
+// exactly one point on statColumn for userId, also bumping max_energy
+// directly for endurance specifically (see the ALTER/UPDATE idiom used
+// everywhere else in this file for that column). Returns the new value.
+function spendLevelupPoint(userId, statColumn) {
+  db.prepare(`UPDATE pvp_stats SET ${statColumn} = ${statColumn} + 1 WHERE user_id = ?`).run(userId);
+  if (statColumn === 'endurance') {
+    db.prepare('UPDATE user_health SET max_energy = max_energy + 1 WHERE user_id = ?').run(userId);
+  }
+  return db.prepare(`SELECT ${statColumn} FROM pvp_stats WHERE user_id = ?`).get(userId)[statColumn];
+}
+
+function levelupKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: 'Точность', callback_data: 'levelup:accuracy' }, { text: 'Сила', callback_data: 'levelup:strength' }],
+      [{ text: 'Ловкость', callback_data: 'levelup:agility' }, { text: 'Выносливость', callback_data: 'levelup:endurance' }],
+    ],
+  };
+}
+
 bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const arg = match[1] ? match[1].toLowerCase() : null;
-  const statColumn = arg ? LEVELUP_STAT_NAMES[arg] : null;
+  const stats = getStats(msg.from.id);
+  const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+
+  // No argument — offer buttons instead of making them type a name.
+  if (!arg) {
+    if (available <= 0) {
+      const needed = 100 - (stats.xp % 100);
+      bot.sendMessage(msg.chat.id, `${actorLabel}, нет свободных очков — ещё ${needed} XP до следующего.`, threadOpts(msg)).catch(() => {});
+      return;
+    }
+    bot.sendMessage(
+      msg.chat.id,
+      `${actorLabel}, доступно очков: ${available}. Точность ${stats.accuracy} | Сила ${stats.strength} | Ловкость ${stats.agility} | Выносливость ${stats.endurance}. Выбери, во что вложить:`,
+      threadOpts(msg, { reply_markup: levelupKeyboard() })
+    ).catch(() => {});
+    return;
+  }
+
+  const statColumn = LEVELUP_STAT_NAMES[arg];
   if (!statColumn) {
     bot.sendMessage(msg.chat.id, `${actorLabel}, укажи характеристику: /levelup точность|сила|ловкость|выносливость`, threadOpts(msg)).catch(() => {});
     return;
   }
-
-  const stats = getStats(msg.from.id);
-  const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
   if (available <= 0) {
     const needed = 100 - (stats.xp % 100);
     bot.sendMessage(msg.chat.id, `${actorLabel}, нет свободных очков — ещё ${needed} XP до следующего.`, threadOpts(msg)).catch(() => {});
     return;
   }
 
-  db.prepare(`UPDATE pvp_stats SET ${statColumn} = ${statColumn} + 1 WHERE user_id = ?`).run(msg.from.id);
-  if (statColumn === 'endurance') {
-    db.prepare('UPDATE user_health SET max_energy = max_energy + 1 WHERE user_id = ?').run(msg.from.id);
-  }
-  const newValue = stats[statColumn] + 1;
+  const newValue = spendLevelupPoint(msg.from.id, statColumn);
   const remaining = available - 1;
   bot.sendMessage(
     msg.chat.id,
@@ -2922,6 +2956,45 @@ bot.on('message', (msg) => console.log('сообщение от:', msg.from?.use
 // stale snapshot.
 bot.on('callback_query', async (query) => {
   const data = query.data || '';
+
+  // /levelup's stat buttons — acts on whoever clicked (query.from.id),
+  // not whoever originally ran /levelup: every user has their own
+  // independent pvp_stats row, so there's nothing to authorize against,
+  // unlike the weapon-steal buttons below. Message stays editable with
+  // a fresh keyboard as long as points remain, so repeated clicks on
+  // the same message keep spending without needing to re-run the
+  // command each time.
+  if (data.startsWith('levelup:')) {
+    const statColumn = data.slice('levelup:'.length);
+    if (!LEVELUP_STAT_LABELS[statColumn]) {
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+    const userId = query.from.id;
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const stats = getStats(userId);
+    const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+    if (available <= 0) {
+      const needed = 100 - (stats.xp % 100);
+      await bot.editMessageText(
+        `${actorLabel}, очков больше нет — ещё ${needed} XP до следующего.`,
+        { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }
+      ).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+    const newValue = spendLevelupPoint(userId, statColumn);
+    const remaining = available - 1;
+    const freshStats = getStats(userId);
+    const text = `${actorLabel}, ${LEVELUP_STAT_LABELS[statColumn]} теперь ${newValue}. Доступно очков: ${remaining}. Точность ${freshStats.accuracy} | Сила ${freshStats.strength} | Ловкость ${freshStats.agility} | Выносливость ${freshStats.endurance}.`;
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: remaining > 0 ? levelupKeyboard() : { inline_keyboard: [] },
+    }).catch(() => {});
+    return bot.answerCallbackQuery(query.id, { text: `+1 ${LEVELUP_STAT_LABELS[statColumn]}!` }).catch(() => {});
+  }
+
   if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
 
   const [action, attackerIdStr, victimIdStr, weaponKey] = data.split(':');
