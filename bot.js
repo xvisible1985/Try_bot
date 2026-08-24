@@ -1010,14 +1010,12 @@ const PVP_BODY_PARTS = ['по голове', 'по спине', 'по ноге',
 // 2026-08-24-combat-attributes-design.md) — named constants so these
 // are trivial to retune later; they're honest guesses, not
 // balance-tested numbers.
-const ACCURACY_PER_POINT = 1;             // pp off the hit threshold, per point
-const HEAD_INJURY_ACCURACY_PENALTY = 10;  // pp added back for the attacker's own head injury
+const ACCURACY_PER_POINT = 1;             // added to the attacker's opposed-roll score per point
+const HEAD_INJURY_ACCURACY_PENALTY = 10;  // pp off the attacker's opposed-roll score, for their own head injury
 const STRENGTH_DAMAGE_PER_POINT = 0.02;   // +2% damage per point, multiplicative
 const ARM_INJURY_DAMAGE_MULT = 0.9;       // -10% damage, multiplicative, for the attacker's own arm injury
-const BASE_DODGE_CHANCE = 50;             // %
-const AGILITY_DODGE_PER_POINT = 0.5;      // pp per point of the DEFENDER's agility
-const MAX_DODGE_CHANCE = 90;              // hard cap so nothing is ever unhittable
-const LEG_INJURY_DODGE_PENALTY = 10;      // pp off dodge, for the DEFENDER's own leg injury
+const AGILITY_DODGE_PER_POINT = 0.5;      // added to the defender's opposed-roll score per point of agility
+const LEG_INJURY_DODGE_PENALTY = 10;      // pp off the defender's opposed-roll score, for their own leg injury
 const AGILITY_COOLDOWN_PER_POINT = 0.005; // -0.5% off the PvP cooldown per point of the ATTACKER's agility
 const ENDURANCE_REGEN_SPEEDUP_PER_POINT = 0.01; // -1% off the energy regen interval per point
 const MIN_ENERGY_REGEN_INTERVAL_SECONDS = 300;  // floor at 5 min (base is 20 min)
@@ -1580,29 +1578,39 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   consumeEnergy(attacker.id);
 
   const bodyPart = pick(PVP_BODY_PARTS);
-  const effectiveThreshold = Math.min(95, Math.max(5,
-    getHitThreshold(target.id) - attackerStats.accuracy + (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0)
-  ));
   const roll = Math.floor(Math.random() * 101);
-  const success = roll >= effectiveThreshold;
 
-  // Second, independent roll: even a well-aimed hit can be dodged. A
-  // natural 100 ("СОКРУШИТЕЛЬНЫЙ УДАР") always bypasses this — it's
-  // meant to be unavoidable.
-  let dodged = false;
-  if (success && roll !== 100) {
+  // Opposed roll: the attacker's d100 (+ точность, - head-injury penalty)
+  // against the defender's own independent d100 (+ any active dodge buff
+  // from getHitThreshold mapped onto this scale, + ловкость, - leg-injury
+  // penalty) — the hit lands only if the attacker's side comes out
+  // strictly ahead. A natural 100 always lands regardless (undodgeable
+  // "СОКРУШИТЕЛЬНЫЙ УДАР"), a natural 0 always misses regardless
+  // (guaranteed fumble) — neither extreme goes through the comparison.
+  let success;
+  let dodgedByDefender = false;
+  let attackerScore = null;
+  let defenderScore = null;
+  if (roll === 100) {
+    success = true;
+  } else if (roll === 0) {
+    success = false;
+  } else {
+    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
     const targetInjury = getUserInjury(target.id);
     const targetStats = getStats(target.id);
-    const dodgeChance = Math.min(MAX_DODGE_CHANCE, Math.max(0,
-      BASE_DODGE_CHANCE + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0)
-    ));
-    dodged = Math.random() * 100 < dodgeChance;
+    const dodgeBuffBonus = getHitThreshold(target.id) - 50; // active kuni dodge buff, mapped onto this scale
+    const defenderRoll = Math.floor(Math.random() * 101);
+    defenderScore = defenderRoll + dodgeBuffBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
+    success = attackerScore > defenderScore;
+    dodgedByDefender = !success;
   }
 
-  const outcome = !success ? '❌ неудачно' : dodged ? '🌀 уворот!' : '✅ удачно';
+  const outcome = roll === 0 ? '❌ неудачно' : dodgedByDefender ? '🌀 уворот!' : '✅ удачно';
+  const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
   await bot.sendMessage(
     chatId,
-    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100`,
+    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100${scoreText}`,
     threadOpts(msgLike)
   ).catch(() => {});
   if (!success) {
@@ -1612,6 +1620,8 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     // pickup listener in the main message handler hands it to whoever
     // writes next (see "--- Filter muted & animal messages ---" below).
     // Bare-handed misses (weapon.key === null) have nothing to drop.
+    // Losing the opposed roll (dodgedByDefender) has nothing to drop —
+    // only a genuine natural-0 fumble does.
     if (roll === 0 && weapon.key) {
       db.prepare(
         "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
@@ -1622,11 +1632,6 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
         threadOpts(msgLike)
       ).catch(() => {});
     }
-    return;
-  }
-  if (dodged) {
-    // No damage, no weapon side effects, no crit roll, no XP, no чулан
-    // lockout — exactly as if the attack had missed outright.
     return;
   }
 
