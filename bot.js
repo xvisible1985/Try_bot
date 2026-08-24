@@ -1656,7 +1656,7 @@ bot.onText(/\/warriors\b/i, (msg) => {
     const level = Math.floor(stats.xp / 100);
     const heldWeapons = getWeaponsFor('human', user_id);
     const weaponIcons = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key].emoji).join('');
-    lines.push(`${label} — ❤️ ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''} 🏆 ${level}`);
+    lines.push(`${level}. ${label} — ❤️ ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''}`);
   }
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
