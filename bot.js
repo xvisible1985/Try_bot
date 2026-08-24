@@ -509,6 +509,16 @@ runOnce('2026-08-24-full-fresh-start', () => {
   );
 });
 
+// Re-allocation reset requested after the fresh start above: every
+// spent attribute point goes back to 0, and +300 XP is added on top of
+// whatever each fighter already had (additive, not a flat overwrite —
+// this stacks with anyone's real progress since the fresh-start reset
+// rather than erasing it), so their available points recompute as
+// floor((old_xp + 300) / 100) with 0 already spent.
+runOnce('2026-08-24-attributes-reset-plus-300xp', () => {
+  db.exec('UPDATE pvp_stats SET accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = xp + 300');
+});
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
