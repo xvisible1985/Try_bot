@@ -3338,8 +3338,13 @@ bot.on('callback_query', async (query) => {
   // different button click in the meantime) rather than trusting the
   // snapshot the offer was built from.
   const victimId = Number(victimIdStr);
+  // Same expiry filter as getWeaponsFor — without it, a knife that
+  // expired in the gap between the offer being posted and this click
+  // could still be "stolen" here despite already being invisible
+  // everywhere else (getWeaponsFor, /me, /find, /warriors).
   const row = db.prepare(
-    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? AND weapon_key = ?"
+    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? AND weapon_key = ? " +
+    "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
   ).get(victimId, weaponKey);
   if (!row) {
     await bot.editMessageText('Этого оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
@@ -3463,7 +3468,19 @@ function arenaTick() {
     if ((now - lastDropAt) * 1000 < ARENA_DROP_INTERVAL_MS) return;
 
     const newBatchId = state.current_batch_id + 1;
-    const crateTypes = ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir', 'knife'];
+    // Only 1 knife ever exists at a time (weapon_ownership has exactly
+    // one 'knife' row) — since the drop cadence (3h) equals the knife's
+    // own decay timer (3h), a new batch landing while the previous
+    // knife is still held (or lying fumble-dropped, unclaimed) would
+    // otherwise silently steal/overwrite it via /pick's unconditional
+    // UPDATE. The decay check above already reverts an expired one to
+    // 'none' earlier in this same tick, so re-querying here reflects
+    // that immediately — only offer a fresh knife when none currently
+    // exists.
+    const knifeNow = db.prepare("SELECT owner_type FROM weapon_ownership WHERE weapon_key = 'knife'").get();
+    const crateTypes = knifeNow.owner_type === 'none'
+      ? ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir', 'knife']
+      : ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir'];
     const insertCrate = db.prepare('INSERT INTO arena_crates (batch_id, crate_type, claimed_by) VALUES (?, ?, NULL)');
     const insertBatch = db.transaction((types) => {
       for (const type of types) insertCrate.run(newBatchId, type);
