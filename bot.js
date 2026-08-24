@@ -1847,7 +1847,7 @@ function itemLabel(itemType) {
 // Target resolution copied from /kick rather than shared — this file
 // duplicates these small per-command snippets instead of extracting a
 // helper.
-bot.onText(/\/give(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+bot.onText(/\/give\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   let target = null;
   if (msg.reply_to_message && msg.reply_to_message.from) {
     target = {
