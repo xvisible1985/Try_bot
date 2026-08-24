@@ -1829,6 +1829,89 @@ bot.onText(/\/recharge\b/i, (msg) => {
   ).catch(() => {});
 });
 
+// /give — transfers one elixir or currently-held weapon to another warrior,
+// with the receiver's explicit accept/decline (see
+// docs/superpowers/specs/2026-08-24-item-transfer-design.md). Two stages,
+// both handled in the callback_query listener below: gv_i (sender picks
+// which item) posts a fresh message that gv_y/gv_n (receiver accepts or
+// declines) resolves. Nothing is reserved ahead of time — the actual
+// transfer only happens at gv_y click time, so a stale offer just fails
+// gracefully instead of needing rollback.
+function itemLabel(itemType) {
+  if (itemType === 'elixir:health') return '🧪❤️ эликсир здоровья';
+  if (itemType === 'elixir:energy') return '🧪⚡ эликсир энергии';
+  const def = WEAPON_DEFS[itemType.slice('weapon:'.length)];
+  return `${def.emoji} ${def.accusative}`;
+}
+
+// Target resolution copied from /kick rather than shared — this file
+// duplicates these small per-command snippets instead of extracting a
+// helper.
+bot.onText(/\/give(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+  let target = null;
+  if (msg.reply_to_message && msg.reply_to_message.from) {
+    target = {
+      id: msg.reply_to_message.from.id,
+      username: msg.reply_to_message.from.username,
+      firstName: msg.reply_to_message.from.first_name,
+    };
+  } else if (match[1]) {
+    const handle = match[1].replace(/^@/, '');
+    try {
+      const chat = await bot.getChat('@' + handle);
+      target = { id: chat.id, username: chat.username, firstName: chat.first_name };
+    } catch {}
+  }
+
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  if (!target) {
+    bot.sendMessage(msg.chat.id, 'Укажи @юзернейм или ответь на сообщение того, кому хочешь передать предмет.', threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const targetLabel = target.username ? `@${target.username}` : target.firstName;
+
+  if (target.id === msg.from.id) {
+    bot.sendMessage(msg.chat.id, 'Себе что ли? 🤔', threadOpts(msg)).catch(() => {});
+    return;
+  }
+  if (!isWarrior(msg.from.id)) {
+    bot.sendMessage(msg.chat.id, 'Сначала стань воином: /warrior', threadOpts(msg)).catch(() => {});
+    return;
+  }
+  if (!isWarrior(target.id)) {
+    bot.sendMessage(msg.chat.id, `${targetLabel} ещё не воин — нечего ему передавать.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  ensureStatsRow(msg.from.id);
+  const stats = db.prepare('SELECT health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(msg.from.id);
+  const weapons = getWeaponsFor('human', msg.from.id);
+
+  if (stats.health_elixirs <= 0 && stats.energy_elixirs <= 0 && weapons.length === 0) {
+    bot.sendMessage(msg.chat.id, 'Нечего передать — глянь /inventory.', threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  const buttons = [];
+  if (stats.health_elixirs > 0) {
+    buttons.push([{ text: `🧪❤️ Эликсир здоровья ×${stats.health_elixirs}`, callback_data: `gv_i:${msg.from.id}:${target.id}:elixir:health` }]);
+  }
+  if (stats.energy_elixirs > 0) {
+    buttons.push([{ text: `🧪⚡ Эликсир энергии ×${stats.energy_elixirs}`, callback_data: `gv_i:${msg.from.id}:${target.id}:elixir:energy` }]);
+  }
+  for (const { weapon_key } of weapons) {
+    const def = WEAPON_DEFS[weapon_key];
+    buttons.push([{ text: `${def.emoji} ${def.name}`, callback_data: `gv_i:${msg.from.id}:${target.id}:weapon:${weapon_key}` }]);
+  }
+
+  bot.sendMessage(
+    msg.chat.id,
+    `${actorLabel}, что передать ${targetLabel}?`,
+    threadOpts(msg, { reply_markup: { inline_keyboard: buttons } })
+  ).catch(() => {});
+});
+
 // All of /kick's actual combat logic, factored out of the onText handler
 // below (which only parses a target and weapon slot from the command
 // text) so it depends on plain values instead of the raw Telegram
