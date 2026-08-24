@@ -3356,13 +3356,13 @@ bot.on('message_reaction', async (reaction) => {
 });
 
 // Tracks /give Stage-2 offer messages already resolved (accepted or
-// declined), keyed by message_id — without this, two rapid clicks on the
-// same "Принять" button would each independently pass the elixir count
-// check and double-transfer a stackable item (the weapon path doesn't
-// need this since ownership is naturally single-use, but elixirs are
-// fungible so "count > 0" alone can't tell a replay from a legitimate
-// second spend).
+// declined), keyed by "chatId:messageId" (message_id is only unique
+// within a chat, not globally, and /give is usable in any chat) — without
+// this, two rapid clicks on the same "Принять" button would each
+// independently pass the elixir count check and double-transfer a
+// stackable item. Capped like reactionRollsSeen to avoid unbounded growth.
 const resolvedGiveOffers = new Set();
+const MAX_RESOLVED_GIVE_OFFERS = 1000;
 
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
 bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'id:', msg.from?.id, 'текст:', msg.text));
@@ -3493,10 +3493,12 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
 
-    if (resolvedGiveOffers.has(messageId)) {
+    const resolvedKey = `${chatId}:${messageId}`;
+    if (resolvedGiveOffers.has(resolvedKey)) {
       return bot.answerCallbackQuery(query.id).catch(() => {});
     }
-    resolvedGiveOffers.add(messageId);
+    resolvedGiveOffers.add(resolvedKey);
+    if (resolvedGiveOffers.size > MAX_RESOLVED_GIVE_OFFERS) resolvedGiveOffers.delete(resolvedGiveOffers.values().next().value);
 
     const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
     const senderKnown = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(senderId);
