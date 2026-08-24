@@ -1575,6 +1575,30 @@ bot.onText(/\/warrior\b/i, (msg) => {
   ).catch(() => {});
 });
 
+// /warriors — roster of everyone who's registered via /warrior, sorted
+// by xp (highest first — the same value level is derived from). Each
+// line: display name, health, held real weapon(s) by emoji (blank if
+// none), level.
+bot.onText(/\/warriors\b/i, (msg) => {
+  const warriors = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1 ORDER BY xp DESC').all();
+  if (!warriors.length) {
+    bot.sendMessage(msg.chat.id, 'Пока нет ни одного воина — используй /warrior, чтобы стать первым.', threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const lines = ['⚔️ Воины:'];
+  for (const { user_id } of warriors) {
+    const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(user_id);
+    const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
+    const health = getUserHealth(user_id);
+    const stats = getStats(user_id);
+    const level = Math.floor(stats.xp / 100);
+    const heldWeapons = getWeaponsFor('human', user_id);
+    const weaponIcons = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key].emoji).join('');
+    lines.push(`${label} — ❤️ ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''} 🏆 ${level}`);
+  }
+  bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
+});
+
 // All of /kick's actual combat logic, factored out of the onText handler
 // below (which only parses a target and weapon slot from the command
 // text) so it depends on plain values instead of the raw Telegram
@@ -2879,6 +2903,7 @@ bot.onText(/\/help\b/, (msg) => {
     'PvP:',
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/warrior — стать воином (один раз навсегда); без этого ни атаковать, ни быть целью /kick нельзя; сразу даёт 300 опыта (3 очка) на характеристики — вложить через /levelup',
+    '/warriors — список всех воинов: здоровье, иконки оружия в руках, уровень',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
