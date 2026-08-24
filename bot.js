@@ -956,11 +956,6 @@ bot.onText(/\/mutes/, (msg) => {
 // this bot already owns user_health/injuries/mutes directly.
 const PVP_WEAPONS = ['палкой', 'сковородкой', 'веткой', 'ботинком', 'подушкой', 'зонтиком', 'веслом', 'шваброй', 'рыбой', 'кулаком'];
 const PVP_BODY_PARTS = ['по голове', 'по спине', 'по ноге', 'по руке', 'по животу', 'по попе', 'по лбу', 'в бок'];
-const PVP_INJURY_REFUSAL_TEXT = {
-  arm: 'твоя рука ещё болит, не до драки!',
-  leg: 'твоя нога ещё болит, не до драки!',
-  head: 'твоя голова ещё болит, не до драки!',
-};
 
 // Combat attribute formulas (see docs/superpowers/specs/
 // 2026-08-24-combat-attributes-design.md) — named constants so these
@@ -1422,11 +1417,6 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     return;
   }
 
-  const injury = getUserInjury(attacker.id);
-  if (injury) {
-    bot.sendMessage(chatId, `${actorLabel}, ${PVP_INJURY_REFUSAL_TEXT[injury]}`, threadOpts(msgLike)).catch(() => {});
-    return;
-  }
   const attackerHealth = getUserHealth(attacker.id);
   if (isKnockedOut(attacker.id)) {
     bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msgLike)).catch(() => {});
@@ -1437,12 +1427,23 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     return;
   }
 
+  // Injuries no longer block attacking outright — see
+  // docs/superpowers/specs/2026-08-24-combat-attributes-design.md.
+  // attackerInjury is read once here and reused below for both the
+  // accuracy penalty (head) and the damage penalty (arm); the target's
+  // own injury (leg, for dodge) is read separately once the dodge roll
+  // actually needs it.
+  const attackerInjury = getUserInjury(attacker.id);
+  const attackerStats = getStats(attacker.id);
+
   // Weapon is resolved before the cooldown check since the cooldown is
   // keyed by weapon (see checkPvpCooldown) — which bucket applies depends
   // on what this swing actually turns out to be (including the
-  // empty-slot-falls-back-to-bare-handed case).
+  // empty-slot-falls-back-to-bare-handed case). The cooldown's own
+  // duration is shortened by the attacker's agility.
   const weapon = pickWeaponForAttacker('human', attacker.id, slot, PVP_WEAPONS);
-  const cooldownRemaining = checkPvpCooldown(attacker.id, weapon.key);
+  const effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, PVP_COOLDOWN_MS * (1 - attackerStats.agility * AGILITY_COOLDOWN_PER_POINT));
+  const cooldownRemaining = checkPvpCooldown(attacker.id, weapon.key, effectiveCooldownMs);
   if (cooldownRemaining > 0) {
     bot.sendMessage(
       chatId,
@@ -1459,9 +1460,26 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   consumeEnergy(attacker.id);
 
   const bodyPart = pick(PVP_BODY_PARTS);
+  const effectiveThreshold = Math.min(95, Math.max(5,
+    getHitThreshold(target.id) - attackerStats.accuracy + (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0)
+  ));
   const roll = Math.floor(Math.random() * 101);
-  const success = roll >= getHitThreshold(target.id);
-  const outcome = success ? '✅ удачно' : '❌ неудачно';
+  const success = roll >= effectiveThreshold;
+
+  // Second, independent roll: even a well-aimed hit can be dodged. A
+  // natural 100 ("СОКРУШИТЕЛЬНЫЙ УДАР") always bypasses this — it's
+  // meant to be unavoidable.
+  let dodged = false;
+  if (success && roll !== 100) {
+    const targetInjury = getUserInjury(target.id);
+    const targetStats = getStats(target.id);
+    const dodgeChance = Math.min(MAX_DODGE_CHANCE, Math.max(0,
+      BASE_DODGE_CHANCE + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0)
+    ));
+    dodged = Math.random() * 100 < dodgeChance;
+  }
+
+  const outcome = !success ? '❌ неудачно' : dodged ? '🌀 уворот!' : '✅ удачно';
   await bot.sendMessage(
     chatId,
     `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100`,
@@ -1486,6 +1504,19 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     }
     return;
   }
+  if (dodged) {
+    // No damage, no weapon side effects, no crit roll, no XP, no чулан
+    // lockout — exactly as if the attack had missed outright.
+    return;
+  }
+
+  // A genuinely landed hit: stamp the чулан lockout immediately (this
+  // must happen regardless of what the damage-calc branch below turns
+  // out to be — even a carrot "dick" heal counts as "вступил в драку").
+  combatLockouts.set(attacker.id, Date.now());
+
+  const strengthFactor = 1 + attackerStats.strength * STRENGTH_DAMAGE_PER_POINT;
+  const armInjuryFactor = attackerInjury === 'arm' ? ARM_INJURY_DAMAGE_MULT : 1;
 
   const targetHealthBefore = getUserHealth(target.id);
   let targetHealthAfter;
@@ -1504,15 +1535,15 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
 
     if (hole === 'ear') {
-      const dmg = Math.round(rawDmg * 0.8);
+      const dmg = Math.round(rawDmg * 0.8 * strengthFactor * armInjuryFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'nose') {
-      const dmg = Math.round(rawDmg * 0.9);
+      const dmg = Math.round(rawDmg * 0.9 * strengthFactor * armInjuryFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'mouth') {
-      const dmg = Math.round(rawDmg * 0.5);
+      const dmg = Math.round(rawDmg * 0.5 * strengthFactor * armInjuryFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'dick') {
@@ -1526,7 +1557,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     }
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * weapon.multiplier);
+    const dmg = Math.round(rawDmg * weapon.multiplier * strengthFactor * armInjuryFactor);
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
     await bot.sendMessage(
       chatId,
@@ -1570,6 +1601,12 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   if (isCrit) {
     recordCrit(attacker.id);
   }
+  // Every landed, non-dodged hit earns XP, tiered by outcome — this is
+  // reached unconditionally (unlike the injury+steal block below, which
+  // stays gated on roll !== 100 and the carrot-ass suppression).
+  const xpGain = roll === 100 ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
+  ensureStatsRow(attacker.id);
+  db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
   if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass')) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
