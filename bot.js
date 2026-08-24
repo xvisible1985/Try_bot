@@ -1576,6 +1576,12 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   const targetHealthBefore = getUserHealth(target.id);
   let targetHealthAfter;
   let hole = null;
+  // Only meaningful for hole === 'ass' — whether the victim's extra 50/50
+  // "clench" roll blocked the poke outright (see below). Gates the crit-
+  // suppression condition further down: a BLOCKED attempt did no damage
+  // at all, so there's no "already devastating enough" reason left to
+  // suppress the normal crit/injury roll on this same swing.
+  let assClenched = false;
 
   if (roll === 100) {
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
@@ -1598,17 +1604,28 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'mouth') {
-      const dmg = Math.round(rawDmg * 0.5 * strengthFactor * armInjuryFactor);
-      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
-      await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
+      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
+      const healed = targetHealthAfter - targetHealthBefore.health;
+      db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! ${targetLabel} с хрустом её сгрызает и получает +${healed} здоровья (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'dick') {
       targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
       const healed = targetHealthAfter - targetHealthBefore.health;
       db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
       await bot.sendMessage(chatId, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает +${healed} здоровья и оргазм (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
     } else {
-      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
-      await bot.sendMessage(chatId, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
+      // Extra 50/50 roll on top of the general dodge from earlier in
+      // performKick — the victim gets one more chance specifically here,
+      // to "clench" and block the poke outright before it becomes a
+      // full health wipe.
+      assClenched = Math.random() < 0.5;
+      if (assClenched) {
+        targetHealthAfter = targetHealthBefore.health;
+        await bot.sendMessage(chatId, `🥕🍑 ${actorLabel} целится ${targetLabel} в очко, но та вовремя сжимается — морковка не проходит!`, threadOpts(msgLike)).catch(() => {});
+      } else {
+        targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
+        await bot.sendMessage(chatId, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
+      }
     }
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
@@ -1662,7 +1679,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   const xpGain = roll === 100 ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
   ensureStatsRow(attacker.id);
   db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
-  if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass')) {
+  if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass' && !assClenched)) {
     const injuryType = pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
     recordInjuryDealt(attacker.id);
