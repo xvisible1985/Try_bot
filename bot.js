@@ -1094,13 +1094,13 @@ function getHitThreshold(targetId) {
   return 50;
 }
 
-// Spends 1 energy for a /kick attempt. Returns the remaining energy on
-// success, or null if the person has none left (row is guaranteed to exist
-// by the getUserHealth call, so null unambiguously means "not enough
-// energy", never "no row").
-function consumeEnergy(userId) {
+// Spends `amount` energy (1 by default, for a /kick attempt; kuni buffs
+// pass 2). Returns the remaining energy on success, or null if there
+// wasn't enough left (row is guaranteed to exist by the getUserHealth
+// call, so null unambiguously means "not enough energy", never "no row").
+function consumeEnergy(userId, amount = 1) {
   getUserHealth(userId);
-  const row = db.prepare('UPDATE user_health SET energy = energy - 1 WHERE user_id = ? AND energy > 0 RETURNING energy').get(userId);
+  const row = db.prepare('UPDATE user_health SET energy = energy - ? WHERE user_id = ? AND energy >= ? RETURNING energy').get(amount, userId, amount);
   return row ? row.energy : null;
 }
 
@@ -1837,6 +1837,10 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
 // needed (see docs/superpowers/specs/2026-08-16-kuni-buffs-design.md).
 // Each command's cooldown always matches its own buff's 10-minute
 // duration, so "on cooldown" and "buff still active" are the same check.
+// Energy is spent on every attempt, success or the 50/50 "не вышло" —
+// same "the attempt costs the resource" idiom as /kick's own energy
+// spend, which happens before its hit/miss roll too.
+const KUNI_ENERGY_COST = 2;
 bot.onText(/\/kuniFun\b/, async (msg) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const now = Math.floor(Date.now() / 1000);
@@ -1844,6 +1848,10 @@ bot.onText(/\/kuniFun\b/, async (msg) => {
   if (row && row.fun_cd_until > now) {
     const minutesLeft = Math.ceil((row.fun_cd_until - now) / 60);
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
+  }
+  if (consumeEnergy(msg.from.id, KUNI_ENERGY_COST) === null) {
+    const current = getUserHealth(msg.from.id).energy;
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии на куни (нужно ${KUNI_ENERGY_COST}, есть ${current}).`, threadOpts(msg));
   }
   const until = now + 600;
   const roll = Math.floor(Math.random() * 101);
@@ -1869,6 +1877,10 @@ bot.onText(/\/kuniAlia\b/, async (msg) => {
     const minutesLeft = Math.ceil((row.alia_cd_until - now) / 60);
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
   }
+  if (consumeEnergy(msg.from.id, KUNI_ENERGY_COST) === null) {
+    const current = getUserHealth(msg.from.id).energy;
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии на куни (нужно ${KUNI_ENERGY_COST}, есть ${current}).`, threadOpts(msg));
+  }
   const until = now + 600;
   const roll = Math.floor(Math.random() * 101);
   if (roll < 50) {
@@ -1892,6 +1904,10 @@ bot.onText(/\/kuniTama\b/, async (msg) => {
   if (row && row.tama_cd_until > now) {
     const minutesLeft = Math.ceil((row.tama_cd_until - now) / 60);
     return bot.sendMessage(msg.chat.id, `${actorLabel}, бафф уже активен (ещё ${minutesLeft} мин).`, threadOpts(msg));
+  }
+  if (consumeEnergy(msg.from.id, KUNI_ENERGY_COST) === null) {
+    const current = getUserHealth(msg.from.id).energy;
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии на куни (нужно ${KUNI_ENERGY_COST}, есть ${current}).`, threadOpts(msg));
   }
   const until = now + 600;
   const roll = Math.floor(Math.random() * 101);
@@ -2799,9 +2815,9 @@ bot.onText(/\/help\b/, (msg) => {
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
-    '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
-    '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
-    '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; кулдаун = 10 мин в любом случае)',
+    '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
+    '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
+    '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '',
     'DedoVirus.2026 (эпидемия):',
     '/0patient — назначить нулевого пациента (ответ на сообщение, админ)',
