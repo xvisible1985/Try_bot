@@ -278,6 +278,13 @@ try {
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN hidden_since INTEGER');
 } catch {}
+// Bat's 30%-on-hit stun (see performKick's weapon.key === 'bat' block) —
+// while active, the stunned person's own /kick refuses outright, same
+// idiom as isKnockedOut/isHidden below (a plain lazy timestamp read, no
+// separate cleanup needed).
+try {
+  db.exec('ALTER TABLE user_health ADD COLUMN stunned_until INTEGER');
+} catch {}
 
 // Per-fighter combat stats. hidden_seconds accrues only when a hide
 // session definitively ends (see endHideSession) — "time NOT hidden" is
@@ -849,6 +856,14 @@ function isKnockedOut(userId) {
     return false;
   }
   return true;
+}
+
+// Bat's 30%-on-hit stun (see performKick's weapon.key === 'bat' block)
+// — lazy read, no cleanup needed since it's a plain timestamp on
+// user_health, same idiom as isHidden.
+function isStunned(userId) {
+  const row = db.prepare('SELECT stunned_until FROM user_health WHERE user_id = ?').get(userId);
+  return !!row && !!row.stunned_until && row.stunned_until * 1000 > Date.now();
 }
 
 function muteUser(userId, chatId, username, byId, byName, durationMs) {
@@ -1679,6 +1694,12 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msgLike)).catch(() => {});
     return;
   }
+  if (isStunned(attacker.id)) {
+    const stunRow = db.prepare('SELECT stunned_until FROM user_health WHERE user_id = ?').get(attacker.id);
+    const minutesLeft = Math.ceil((stunRow.stunned_until * 1000 - Date.now()) / 60000);
+    bot.sendMessage(chatId, `${actorLabel}, ты оглушён битой — не можешь атаковать ещё ${minutesLeft} мин.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
   if (attackerHealth.energy === 0) {
     bot.sendMessage(chatId, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msgLike)).catch(() => {});
     return;
@@ -1871,6 +1892,23 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   if (weapon.key === 'crutch') {
     applyDimon(target.id, chatId, target.username || target.firstName);
     await bot.sendMessage(chatId, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msgLike)).catch(() => {});
+  }
+
+  if (weapon.key === 'bat' && Math.random() < 0.3) {
+    const stunnedUntil = Math.floor(Date.now() / 1000) + 3 * 60;
+    db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+    await bot.sendMessage(chatId, `🏏 ${actorLabel} оглушил ${targetLabel} битой! Не сможет атаковать 3 минуты.`, threadOpts(msgLike)).catch(() => {});
+  }
+
+  if (weapon.key === 'axe' && Math.random() < 0.2) {
+    // Flat, unmodified extra damage — not scaled by strength/injury,
+    // same "guaranteed bonus effect" idiom as carrot's dick heal.
+    // Reassigns the outer targetHealthAfter (not a new local) so the
+    // knockout-steal offer further down sees the true final health if
+    // this extra 10 happens to be what floors them to 0.
+    const beforeShave = targetHealthAfter;
+    targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, 10);
+    await bot.sendMessage(chatId, `🪓😳 ${actorLabel} топором нечаянно побрил ${targetLabel} лобок! Ещё −10 ХП (${beforeShave} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
   }
 
   // isCrit is tracked for stats independent of whether the injury/steal
