@@ -550,6 +550,22 @@ runOnce('2026-08-24-full-rollback-unregister-warriors', () => {
   );
 });
 
+// Same full rollback again, requested a second time after more testing
+// piled up new state — this time also resets max_energy back to its
+// column default (10), undoing any permanent increase from spending
+// points on выносливость via /levelup before this reset (the earlier
+// rollback above only restored energy up to whatever max_energy already
+// was, never touching an inflated cap itself).
+runOnce('2026-08-24-full-rollback-2-with-max-energy-reset', () => {
+  db.exec('UPDATE user_health SET max_energy = 10, energy = 10, health = max_health');
+  db.exec('DELETE FROM injuries');
+  db.exec("DELETE FROM mutes WHERE muted_by_name = 'драка'");
+  db.exec(
+    "UPDATE pvp_stats SET is_warrior = 0, crit_count = 0, injuries_dealt = 0, hidden_seconds = 0, " +
+    "accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = 0, first_tracked_at = strftime('%s','now')"
+  );
+});
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
