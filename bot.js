@@ -401,7 +401,7 @@ db.exec(`
 // pickup listener in the main message handler hands it to whoever writes
 // next there. A 'dropped' row matches neither 'human' nor 'troll' in any
 // existing owner_type filter, so it's automatically excluded from
-// getWeaponsFor/pickWeaponForAttacker/maybeStealWeapon for the duration.
+// getWeaponsFor/pickWeaponForAttacker for the duration.
 try {
   db.exec('ALTER TABLE weapon_ownership ADD COLUMN dropped_chat_id INTEGER');
 } catch {}
@@ -1154,7 +1154,8 @@ function checkPvpCooldown(userId, weaponKey, cooldownMs) {
 }
 
 // Weapon keys currently held by a given owner — 0, 1, or 2 rows (a holder
-// can end up with both over time via maybeStealWeapon). ownerUserId is
+// can end up with both over time via the knockout weapon-steal offer).
+// ownerUserId is
 // ignored for ownerType 'troll' (there's only ever one troll). ORDER BY
 // rowid gives a stable "acquisition order" (rowid is assigned once, at
 // each weapon's original seed INSERT, and never changes across the
@@ -1183,27 +1184,6 @@ function pickWeaponForAttacker(ownerType, ownerUserId, slot, fallbackWeapons) {
     }
   }
   return { key: null, text: pick(fallbackWeapons), multiplier: 1 };
-}
-
-// 5% chance to steal one of the target's currently-held real weapons
-// after a crit lands on them — call this right after every
-// applyInjury(...) against a human. attacker is {type:'human', userId,
-// username, firstName} or {type:'troll'}. If the target holds more than
-// one weapon, which one gets stolen is random (this is the silent,
-// no-choice counterpart to the knockout-steal-buttons offer below,
-// which lets the attacker pick). Returns the stolen weapon_key, or null
-// if nothing was stolen (missed the 5% roll, or the target held none).
-function maybeStealWeapon(targetUserId, attacker) {
-  if (Math.random() >= 0.05) return null;
-  const rows = db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ?").all(targetUserId);
-  if (!rows.length) return null;
-  const weaponKey = pick(rows.map(row => row.weapon_key));
-  if (attacker.type === 'troll') {
-    db.prepare("UPDATE weapon_ownership SET owner_type = 'troll', owner_user_id = NULL, owner_username = NULL WHERE weapon_key = ?").run(weaponKey);
-  } else {
-    db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?").run(attacker.userId, attacker.username || attacker.firstName, weaponKey);
-  }
-  return weaponKey;
 }
 
 // Starts (or refreshes) a 20-minute bleed on a scissors hit — see the
@@ -1692,27 +1672,16 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     if (weapon.key === 'horns') {
       await bot.sendMessage(chatId, `🐂 ${actorLabel} насадила ${targetLabel} на рога!`, threadOpts(msgLike)).catch(() => {});
     }
-    const stolenKey = maybeStealWeapon(target.id, { type: 'human', userId: attacker.id, username: attacker.username, firstName: attacker.firstName });
-    if (stolenKey) {
-      const stolenDef = WEAPON_DEFS[stolenKey];
-      await bot.sendMessage(
-        chatId,
-        `${stolenDef.emoji} ${actorLabel} отобрал ${stolenDef.accusative} у ${targetLabel} и теперь бьёт ${stolenDef.instrumental} сам!`,
-        threadOpts(msgLike)
-      ).catch(() => {});
-    }
   }
 
-  // Knockout weapon-steal offer — additive to the silent 5% crit-steal
-  // above, not a replacement (see docs/superpowers/specs/
-  // 2026-08-19-knockout-steal-buttons-design.md). Looked up live rather
-  // than from a value cached earlier in this handler: if the crit
-  // block's own maybeStealWeapon just moved a weapon to attacker.id,
-  // this SELECT correctly finds it gone from target.id, so no redundant
-  // "steal the weapon you already just got" button appears for it. If
-  // the victim holds more than one weapon, one button per weapon lets
-  // the attacker choose which single one to take (see the callback
-  // handler below) rather than grabbing an arbitrary one.
+  // Knockout weapon-steal offer — the only way to take a weapon off
+  // someone now (see docs/superpowers/specs/2026-08-19-knockout-steal-
+  // buttons-design.md); the old silent 5%-on-crit auto-steal is gone.
+  // Looked up live rather than from a value cached earlier in this
+  // handler, same defensive idiom as before. If the victim holds more
+  // than one weapon, one button per weapon lets the attacker choose
+  // which single one to try for (see the callback handler below, which
+  // now also rolls 50/50 on whether the grab actually succeeds).
   if (targetHealthAfter === 0) {
     const heldWeapons = getWeaponsFor('human', target.id);
     if (heldWeapons.length > 0) {
@@ -2353,8 +2322,9 @@ bot.on('message', async (msg) => {
   if (msg.from?.is_bot) return;
   // One-time weapon-owner resolution: fires at most once per weapon key,
   // ever — gated on owner_type = 'human' as well as owner_user_id IS NULL
-  // because a troll steal also sets owner_user_id back to NULL (see
-  // maybeStealWeapon's troll branch), and without this guard a message
+  // because a troll steal also sets owner_user_id back to NULL (troll-bot
+  // still has its own separate 5%-on-crit auto-steal, untouched — this
+  // file's own copy was removed), and without this guard a message
   // from the original seed user after a troll steal would re-fire this
   // UPDATE and overwrite owner_user_id/owner_username back to the human
   // while owner_type stayed 'troll' — an inconsistent row. Must run
@@ -2879,10 +2849,21 @@ bot.on('callback_query', async (query) => {
   }
 
   const def = WEAPON_DEFS[row.weapon_key];
+  const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+
+  // 50/50 grip roll — even with the weapon confirmed still on the
+  // victim, the downed victim gets one last chance to hang on to it
+  // instead of the grab always succeeding outright.
+  if (Math.random() < 0.5) {
+    const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(victimId);
+    const victimLabel = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${victimId}`;
+    await bot.editMessageText(`🤜 ${actorLabel} пытается вырвать ${def.accusative}, но ${victimLabel} вцепляется в неё мёртвой хваткой — не отдаёт!`, editOpts).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
   db.prepare(
     "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?"
   ).run(query.from.id, query.from.username, row.weapon_key);
-  const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
   await bot.editMessageText(`${def.emoji} ${actorLabel} обыскал(а) отключившегося и забрал(а) ${def.accusative}!`, editOpts).catch(() => {});
   bot.answerCallbackQuery(query.id).catch(() => {});
 });
