@@ -316,6 +316,36 @@ for (const [column, def] of [['accuracy', 'INTEGER NOT NULL DEFAULT 0'], ['stren
 try {
   db.exec('ALTER TABLE pvp_stats ADD COLUMN is_warrior INTEGER NOT NULL DEFAULT 0');
 } catch {}
+// Stockpiled arena-crate elixirs (see /pick and /elixir further below)
+// — unlike the knife, these aren't applied the instant they're picked
+// up; they bank here until spent on demand.
+for (const [column, def] of [['health_elixirs', 'INTEGER NOT NULL DEFAULT 0'], ['energy_elixirs', 'INTEGER NOT NULL DEFAULT 0']]) {
+  try {
+    db.exec(`ALTER TABLE pvp_stats ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
+
+// Arena crate drops (see arenaTick, /pick, and /elixir further below).
+// current_batch_id increments on every drop; arena_crates.batch_id ties
+// each crate to exactly one drop, which is what makes "1 crate per
+// player per drop" checkable — a claimed_by row from an OLDER batch
+// doesn't count against a player's current-batch claim.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS arena_drop_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_drop_at INTEGER,
+    current_batch_id INTEGER NOT NULL DEFAULT 0
+  )
+`);
+db.prepare('INSERT OR IGNORE INTO arena_drop_state (id, last_drop_at, current_batch_id) VALUES (1, NULL, 0)').run();
+db.exec(`
+  CREATE TABLE IF NOT EXISTS arena_crates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL,
+    crate_type TEXT NOT NULL,
+    claimed_by INTEGER
+  )
+`);
 
 // Lightweight username/first-name cache keyed by user_id, refreshed on
 // every incoming message (see the main message handler below) — nothing
@@ -418,6 +448,11 @@ db.exec(`
 try {
   db.exec('ALTER TABLE weapon_ownership ADD COLUMN dropped_chat_id INTEGER');
 } catch {}
+// The rusty knife's 3-hour decay timer (see WEAPON_DEFS.knife and
+// arenaTick further below) — NULL for every other weapon, forever.
+try {
+  db.exec('ALTER TABLE weapon_ownership ADD COLUMN expires_at INTEGER');
+} catch {}
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'ANOKI5', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('scissors', 'AliyaKuzAli', 'human', NULL, NULL)").run();
@@ -428,6 +463,11 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 // owner_user_id is populated immediately and seed_username stays NULL.
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
+// Unlike every weapon above, the knife starts owned by nobody at all —
+// owner_type = 'none' matches neither 'human' nor 'troll' nor 'dropped'
+// in any existing filter, so it's invisible everywhere until /pick
+// hands it to someone for the first time.
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('knife', NULL, 'none', NULL, NULL)").run();
 
 // One-time (per boot, but INSERT OR IGNORE so it never overwrites a
 // known_users row already populated live from a real message — see the
@@ -1133,6 +1173,13 @@ const WEAPON_DEFS = {
   crutch: { name: 'костыль', instrumental: 'костылём', accusative: 'костыль', multiplier: 1.25, emoji: '🩼' },
   horns: { name: 'рога', instrumental: 'рогами', accusative: 'рога', multiplier: 2, emoji: '🐂' },
   carrot: { name: 'морковка', instrumental: 'морковкой', accusative: 'морковку', emoji: '🥕' },
+  // Not seeded to anyone at startup, unlike the 6 above — starts at
+  // owner_type = 'none' (see the seed row below) and only ever becomes
+  // 'human'-held via /pick, with a 3-hour expires_at that arenaTick
+  // watches for and reverts back to 'none' ("рассыпается"). See
+  // getWeaponsFor's expiry filter for how a held-but-expired knife
+  // silently stops counting without needing active cleanup first.
+  knife: { name: 'ржавый нож', instrumental: 'ржавым ножом', accusative: 'ржавый нож', multiplier: 1.5, emoji: '🔪' },
 };
 
 function getUserInjury(userId) {
@@ -1314,9 +1361,17 @@ function checkPvpCooldown(userId, weaponKey, cooldownMs) {
 // UPDATEs that move ownership around) — this is what /kick1/2/3 index
 // into, and what /me numbers its weapon list by.
 function getWeaponsFor(ownerType, ownerUserId) {
+  // expires_at only ever matters for the knife (every other weapon's is
+  // always NULL) — filtering it out here, in the one shared read
+  // function, means an expired-but-not-yet-swept knife silently stops
+  // counting everywhere (/kickN slots, /me, /find, /warriors) without
+  // needing arenaTick's own cleanup to have run first.
   return ownerType === 'troll'
     ? db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'troll' ORDER BY rowid").all()
-    : db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? ORDER BY rowid").all(ownerUserId);
+    : db.prepare(
+        "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? " +
+        "AND (expires_at IS NULL OR expires_at > strftime('%s','now')) ORDER BY rowid"
+      ).all(ownerUserId);
 }
 
 // Picks the weapon for one swing at a specific "slot": slot 0 always
@@ -1666,6 +1721,105 @@ bot.onText(/\/warriors\b/i, (msg) => {
     lines.push(`${level}. ${label} — ❤️ ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''}`);
   }
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
+});
+
+// /pick — claims one crate from the current arena drop (see arenaTick
+// above). Random pick among whatever's still unclaimed in this batch,
+// atomic claim (guards a same-instant double-click, though Node's
+// single-threaded/synchronous execution already makes that essentially
+// impossible here), one crate per player per batch.
+bot.onText(/\/pick\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  if (msg.chat.id !== ARENA_CHAT_ID) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, ящики можно подбирать только в чате «Поединки».`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  if (!isWarrior(msg.from.id)) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, нужно быть воином — введи /warrior.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  const state = db.prepare('SELECT current_batch_id FROM arena_drop_state WHERE id = 1').get();
+  const batchId = state ? state.current_batch_id : 0;
+  if (!batchId) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, ящиков ещё не было — жди, пока упадут с неба.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  if (db.prepare('SELECT 1 FROM arena_crates WHERE batch_id = ? AND claimed_by = ?').get(batchId, msg.from.id)) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, ты уже забрал ящик из этой волны.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  const candidate = db.prepare('SELECT id, crate_type FROM arena_crates WHERE batch_id = ? AND claimed_by IS NULL ORDER BY RANDOM() LIMIT 1').get(batchId);
+  if (!candidate) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, ящиков больше не осталось — жди следующего падения.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const claim = db.prepare('UPDATE arena_crates SET claimed_by = ? WHERE id = ? AND claimed_by IS NULL').run(msg.from.id, candidate.id);
+  if (claim.changes === 0) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, опоздал — кто-то забрал этот ящик первым.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  if (candidate.crate_type === 'health_elixir') {
+    ensureStatsRow(msg.from.id);
+    db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs + 1 WHERE user_id = ?').run(msg.from.id);
+    bot.sendMessage(msg.chat.id, `📦🧪❤️ ${actorLabel} открыл ящик и нашёл эликсир здоровья! (использовать — /elixir здоровье)`, threadOpts(msg)).catch(() => {});
+  } else if (candidate.crate_type === 'energy_elixir') {
+    ensureStatsRow(msg.from.id);
+    db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs + 1 WHERE user_id = ?').run(msg.from.id);
+    bot.sendMessage(msg.chat.id, `📦🧪⚡ ${actorLabel} открыл ящик и нашёл эликсир энергии! (использовать — /elixir энергия)`, threadOpts(msg)).catch(() => {});
+  } else {
+    const expiresAt = Math.floor(Date.now() / 1000) + 3 * 3600;
+    db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ?, expires_at = ? WHERE weapon_key = 'knife'").run(msg.from.id, msg.from.username, expiresAt);
+    bot.sendMessage(msg.chat.id, `📦🔪 ${actorLabel} открыл ящик и нашёл ржавый нож! Урон ×1.5, рассыплется через 3 часа.`, threadOpts(msg)).catch(() => {});
+  }
+});
+
+// /elixir — spends one stockpiled elixir (see /pick above). No
+// argument shows the current stockpile instead of guessing, same
+// pattern as bare /levelup.
+const ELIXIR_KIND_NAMES = { 'здоровье': 'health', 'зд': 'health', 'энергия': 'energy', 'эн': 'energy' };
+bot.onText(/\/elixir(?:\s+(\S+))?/i, (msg, match) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const arg = match[1] ? match[1].toLowerCase() : null;
+  const kind = arg ? ELIXIR_KIND_NAMES[arg] : null;
+
+  if (!kind) {
+    const stats = getStats(msg.from.id);
+    bot.sendMessage(
+      msg.chat.id,
+      `${actorLabel}, эликсиров: 🧪❤️ здоровья ×${stats.health_elixirs}, 🧪⚡ энергии ×${stats.energy_elixirs}. Использовать: /elixir здоровье|энергия`,
+      threadOpts(msg)
+    ).catch(() => {});
+    return;
+  }
+
+  const column = kind === 'health' ? 'health_elixirs' : 'energy_elixirs';
+  const spent = db.prepare(`UPDATE pvp_stats SET ${column} = ${column} - 1 WHERE user_id = ? AND ${column} > 0 RETURNING ${column}`).get(msg.from.id);
+  if (!spent) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя нет эликсиров ${kind === 'health' ? 'здоровья' : 'энергии'}.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  if (kind === 'health') {
+    const health = getUserHealth(msg.from.id);
+    const after = Math.min(health.max_health, health.health + 100);
+    db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(after, msg.from.id);
+    bot.sendMessage(
+      msg.chat.id,
+      `🧪❤️ ${actorLabel} выпил эликсир здоровья: ${health.health} -> ${after} ХП. Осталось: ${spent.health_elixirs}.`,
+      threadOpts(msg)
+    ).catch(() => {});
+  } else {
+    const before = getUserHealth(msg.from.id);
+    db.prepare('UPDATE user_health SET energy = max_energy WHERE user_id = ?').run(msg.from.id);
+    bot.sendMessage(
+      msg.chat.id,
+      `🧪⚡ ${actorLabel} выпил эликсир энергии: ${before.energy} -> ${before.max_energy}. Осталось: ${spent.energy_elixirs}.`,
+      threadOpts(msg)
+    ).catch(() => {});
+  }
 });
 
 // All of /kick's actual combat logic, factored out of the onText handler
@@ -3007,6 +3161,8 @@ bot.onText(/\/help\b/, (msg) => {
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/warrior — стать воином (один раз навсегда); без этого ни атаковать, ни быть целью /kick нельзя; сразу даёт 300 опыта (3 очка) на характеристики — вложить через /levelup',
     '/warriors — список всех воинов: здоровье, иконки оружия в руках, уровень',
+    '/pick — забрать ящик из последней волны, упавшей на арену (раз в 3 часа, кроме 00:00-08:00; 5 ящиков: 2 эликсира здоровья, 2 эликсира энергии, ржавый нож ×1.5 урона на 3 часа; только в чате «Поединки», только воинам, 1 ящик в одни руки за волну)',
+    '/elixir здоровье|энергия — выпить накопленный эликсир (здоровье: +100 ХП; энергия: полное восстановление); без аргумента — сколько накоплено',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
@@ -3269,6 +3425,61 @@ function healthRegenTick() {
   }
 }
 setInterval(healthRegenTick, HEALTH_REGEN_TICK_MS);
+
+// Arena crate drops — every 3 hours (never during 00:00-08:00 server
+// time), 5 crates (2 health elixirs, 2 energy elixirs, 1 rusty knife)
+// land in the arena chat; /pick further below claims them one at a
+// time. Checked on the same 10-minute cadence as healthRegenTick — the
+// exact moment within that window isn't meaningful, only "has it been
+// >= 3h since the last drop, and are we clear of night hours".
+const ARENA_DROP_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const ARENA_NIGHT_START_HOUR = 0;
+const ARENA_NIGHT_END_HOUR = 8;
+
+function isArenaNightHour() {
+  const hour = new Date().getHours();
+  return hour >= ARENA_NIGHT_START_HOUR && hour < ARENA_NIGHT_END_HOUR;
+}
+
+function arenaTick() {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+
+    // Knife decay — checked every tick regardless of whether a new drop
+    // fires this time, since its 3h timer runs independently of the
+    // drop schedule (it started whenever it was last picked up, not
+    // whenever the crate wave landed).
+    const knifeRow = db.prepare("SELECT owner_user_id, owner_username, expires_at FROM weapon_ownership WHERE weapon_key = 'knife' AND owner_type = 'human'").get();
+    if (knifeRow && knifeRow.expires_at && knifeRow.expires_at < now) {
+      db.prepare("UPDATE weapon_ownership SET owner_type = 'none', owner_user_id = NULL, owner_username = NULL, expires_at = NULL WHERE weapon_key = 'knife'").run();
+      const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(knifeRow.owner_user_id);
+      const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${knifeRow.owner_user_id}`;
+      bot.sendMessage(ARENA_CHAT_ID, `🔪💨 Ржавый нож у ${label} рассыпался от старости!`).catch(() => {});
+    }
+
+    if (isArenaNightHour()) return;
+    const state = db.prepare('SELECT last_drop_at, current_batch_id FROM arena_drop_state WHERE id = 1').get();
+    const lastDropAt = state.last_drop_at || 0;
+    if ((now - lastDropAt) * 1000 < ARENA_DROP_INTERVAL_MS) return;
+
+    const newBatchId = state.current_batch_id + 1;
+    const crateTypes = ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir', 'knife'];
+    const insertCrate = db.prepare('INSERT INTO arena_crates (batch_id, crate_type, claimed_by) VALUES (?, ?, NULL)');
+    const insertBatch = db.transaction((types) => {
+      for (const type of types) insertCrate.run(newBatchId, type);
+    });
+    insertBatch(crateTypes);
+    db.prepare('UPDATE arena_drop_state SET last_drop_at = ?, current_batch_id = ? WHERE id = 1').run(now, newBatchId);
+
+    bot.sendMessage(
+      ARENA_CHAT_ID,
+      '📦☄️ С неба на арену упало 5 ящиков! Внутри: 2 эликсира здоровья, 2 эликсира энергии и ржавый нож. Кто первый напишет /pick — тот и заберёт (только 1 ящик в одни руки).'
+    ).catch(() => {});
+  } catch (err) {
+    console.error('arenaTick failed:', err.message);
+  }
+}
+setInterval(arenaTick, HEALTH_REGEN_TICK_MS);
 
 // Bleed tick (see applyBleed and every `weapon.key === 'scissors'` call
 // site) — 1-minute granularity because the mechanic itself is 1 HP/minute,
