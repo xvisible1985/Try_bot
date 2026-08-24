@@ -534,6 +534,22 @@ runOnce('2026-08-24-fix-attributes-300xp-flat', () => {
   db.exec('UPDATE pvp_stats SET accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = 300');
 });
 
+// Full rollback, unlike every reset above this one — is_warrior itself
+// goes back to 0 too, so /kick refuses everyone again until they run
+// /warrior fresh (which grants its own 300 XP at that point, same as
+// any first-time registration). Health/energy restored to max,
+// injuries cleared, combat-knockout mutes lifted (admin mutes
+// untouched), every pvp_stats counter and attribute zeroed.
+runOnce('2026-08-24-full-rollback-unregister-warriors', () => {
+  db.exec('UPDATE user_health SET health = max_health, energy = max_energy');
+  db.exec('DELETE FROM injuries');
+  db.exec("DELETE FROM mutes WHERE muted_by_name = 'драка'");
+  db.exec(
+    "UPDATE pvp_stats SET is_warrior = 0, crit_count = 0, injuries_dealt = 0, hidden_seconds = 0, " +
+    "accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = 0, first_tracked_at = strftime('%s','now')"
+  );
+});
+
 // --- Animal definitions ---
 const ANIMALS = {
   pig:    { emoji: '🐷', sound: 'Хрю-хрю' },
