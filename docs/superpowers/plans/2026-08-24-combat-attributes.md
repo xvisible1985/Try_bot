@@ -672,7 +672,7 @@ git push
 
 **Note on line numbers:** Tasks 1-3 shifted lines earlier in the file. Locate by surrounding text.
 
-- [ ] **Step 1: Join `pvp_stats` for the per-user regen interval**
+- [x] **Step 1: Join `pvp_stats` for the per-user regen interval**
 
 Find:
 
@@ -709,12 +709,12 @@ Replace with:
     }
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the per-user interval formula in isolation**
+- [x] **Step 3: Verify the per-user interval formula in isolation**
 
 ```bash
 node -e "
@@ -737,7 +737,7 @@ Expected output (in order):
 1000 endurance (clamp floor): 300 expected 300
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js

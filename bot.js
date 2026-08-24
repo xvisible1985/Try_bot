@@ -2850,10 +2850,19 @@ function healthRegenTick() {
       }
     }
 
-    const energyRows = db.prepare('SELECT user_id, energy, max_energy, last_energy_regen_at FROM user_health WHERE energy < max_energy').all();
+    // LEFT JOIN since not every user_health row necessarily has a
+    // pvp_stats row yet (ensureStatsRow only fires lazily, on combat
+    // actions) — COALESCE defaults a missing row to 0 endurance, same
+    // as everywhere else that reads an attribute.
+    const energyRows = db.prepare(
+      'SELECT uh.user_id, uh.energy, uh.max_energy, uh.last_energy_regen_at, COALESCE(ps.endurance, 0) AS endurance ' +
+      'FROM user_health uh LEFT JOIN pvp_stats ps ON ps.user_id = uh.user_id ' +
+      'WHERE uh.energy < uh.max_energy'
+    ).all();
     for (const row of energyRows) {
-      const elapsedSeconds = row.last_energy_regen_at ? now - row.last_energy_regen_at : ENERGY_REGEN_INTERVAL_SECONDS;
-      const gain = Math.floor(elapsedSeconds / ENERGY_REGEN_INTERVAL_SECONDS);
+      const intervalSeconds = Math.max(MIN_ENERGY_REGEN_INTERVAL_SECONDS, ENERGY_REGEN_INTERVAL_SECONDS * (1 - row.endurance * ENDURANCE_REGEN_SPEEDUP_PER_POINT));
+      const elapsedSeconds = row.last_energy_regen_at ? now - row.last_energy_regen_at : intervalSeconds;
+      const gain = Math.floor(elapsedSeconds / intervalSeconds);
       if (gain > 0) {
         db.prepare('UPDATE user_health SET energy = MIN(max_energy, energy + ?), last_energy_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
       }
