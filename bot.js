@@ -1780,10 +1780,11 @@ bot.onText(/\/pick\b/i, (msg) => {
 // /inventory — shows the current elixir stockpile (see /pick above).
 bot.onText(/\/inventory\b/i, (msg) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-  const stats = getStats(msg.from.id);
+  ensureStatsRow(msg.from.id);
+  const stats = db.prepare('SELECT health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(msg.from.id);
   bot.sendMessage(
     msg.chat.id,
-    `${actorLabel}, инвентарь: 🧪❤️ эликсиров здоровья ×${stats.health_elixirs} (/heal), 🧪⚡ эликсиров энергии ×${stats.energy_elixirs} (/recharge)`,
+    `${actorLabel}, инвентарь: 🧪❤️ эликсиров здоровья ×${stats.health_elixirs} (/restore), 🧪⚡ эликсиров энергии ×${stats.energy_elixirs} (/recharge)`,
     threadOpts(msg)
   ).catch(() => {});
 });
