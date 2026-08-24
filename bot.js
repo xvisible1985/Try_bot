@@ -3405,6 +3405,133 @@ bot.on('callback_query', async (query) => {
     return bot.answerCallbackQuery(query.id, { text: `+1 ${LEVELUP_STAT_LABELS[statColumn]}!` }).catch(() => {});
   }
 
+  // /give Stage 1 -> Stage 2: sender picked an item. Re-verify it's still
+  // available (they may have spent/given it away while the keyboard sat
+  // unclicked), then post a fresh message addressed to the receiver with
+  // a 5-minute expiry embedded in callback_data (same lazy-expiry idiom
+  // as hidden_until/mutes/the knife's own expires_at — no timer needed).
+  if (data.startsWith('gv_i:')) {
+    const [, senderIdStr, targetIdStr, ...itemParts] = data.split(':');
+    const senderId = Number(senderIdStr);
+    const targetId = Number(targetIdStr);
+    const itemType = itemParts.join(':');
+
+    if (query.from.id !== senderId) {
+      return bot.answerCallbackQuery(query.id, { text: 'Это не твоё предложение', show_alert: true }).catch(() => {});
+    }
+
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+
+    let available = false;
+    if (itemType === 'elixir:health') {
+      const row = db.prepare('SELECT health_elixirs FROM pvp_stats WHERE user_id = ?').get(senderId);
+      available = !!row && row.health_elixirs > 0;
+    } else if (itemType === 'elixir:energy') {
+      const row = db.prepare('SELECT energy_elixirs FROM pvp_stats WHERE user_id = ?').get(senderId);
+      available = !!row && row.energy_elixirs > 0;
+    } else {
+      const weaponKey = itemType.slice('weapon:'.length);
+      const row = db.prepare(
+        "SELECT 1 FROM weapon_ownership WHERE weapon_key = ? AND owner_type = 'human' AND owner_user_id = ? " +
+        "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
+      ).get(weaponKey, senderId);
+      available = !!row;
+    }
+    if (!available) {
+      await bot.editMessageText('Этого у тебя уже нет.', editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+
+    await bot.editMessageText(`${actorLabel} предлагает ${itemLabel(itemType)}. Ожидание ответа...`, editOpts).catch(() => {});
+
+    const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(targetId);
+    const targetLabel = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${targetId}`;
+    const expiresAt = Math.floor(Date.now() / 1000) + 300;
+
+    bot.sendMessage(
+      chatId,
+      `🎁 ${actorLabel} хочет передать тебе ${itemLabel(itemType)}, ${targetLabel}. Принимаешь?`,
+      threadOpts(query.message, {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Принять', callback_data: `gv_y:${senderId}:${targetId}:${itemType}:${expiresAt}` },
+            { text: 'Отклонить', callback_data: `gv_n:${senderId}:${targetId}:${itemType}:${expiresAt}` },
+          ]],
+        },
+      })
+    ).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  // /give Stage 2: receiver accepts or declines. Nothing was reserved at
+  // Stage 1, so gv_y re-verifies and transfers atomically right here;
+  // gv_n just leaves everything as-is.
+  if (data.startsWith('gv_y:') || data.startsWith('gv_n:')) {
+    const [action, senderIdStr, targetIdStr, ...rest] = data.split(':');
+    const senderId = Number(senderIdStr);
+    const targetId = Number(targetIdStr);
+    const expiresAt = Number(rest[rest.length - 1]);
+    const itemType = rest.slice(0, -1).join(':');
+
+    if (query.from.id !== targetId) {
+      return bot.answerCallbackQuery(query.id, { text: 'Это предложение не тебе', show_alert: true }).catch(() => {});
+    }
+
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
+    const senderKnown = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(senderId);
+    const senderLabel = senderKnown ? (senderKnown.username ? `@${senderKnown.username}` : senderKnown.first_name) : `игрок ${senderId}`;
+    const targetLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+
+    if (action === 'gv_n') {
+      await bot.editMessageText(`Отклонено — предмет остался у ${senderLabel}.`, editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (now > expiresAt) {
+      await bot.editMessageText('Предложение просрочено.', editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+
+    let transferred = false;
+    if (itemType === 'elixir:health') {
+      const spent = db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs - 1 WHERE user_id = ? AND health_elixirs > 0 RETURNING health_elixirs').get(senderId);
+      if (spent) {
+        ensureStatsRow(targetId);
+        db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs + 1 WHERE user_id = ?').run(targetId);
+        transferred = true;
+      }
+    } else if (itemType === 'elixir:energy') {
+      const spent = db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs - 1 WHERE user_id = ? AND energy_elixirs > 0 RETURNING energy_elixirs').get(senderId);
+      if (spent) {
+        ensureStatsRow(targetId);
+        db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs + 1 WHERE user_id = ?').run(targetId);
+        transferred = true;
+      }
+    } else {
+      const weaponKey = itemType.slice('weapon:'.length);
+      const result = db.prepare(
+        "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? " +
+        "WHERE weapon_key = ? AND owner_type = 'human' AND owner_user_id = ? " +
+        "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
+      ).run(targetId, query.from.username, weaponKey, senderId);
+      transferred = result.changes > 0;
+    }
+
+    if (!transferred) {
+      await bot.editMessageText('У отправителя этого уже нет.', editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+
+    await bot.editMessageText(`✅ ${senderLabel} передал(а) ${itemLabel(itemType)} игроку ${targetLabel}!`, editOpts).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
   if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
 
   const [action, attackerIdStr, victimIdStr, weaponKey] = data.split(':');
