@@ -231,7 +231,7 @@ git push
 
 This is the single largest, most consequential edit in this plan. Read the whole replacement block below carefully before applying it — trace what happens to `roll`, `success`, `dodged`, `hole`, and `isCrit` at each step, since several later parts of the function (the crit-suppression condition, the carrot cat/fox block, the knockout offer) still depend on values computed here.
 
-- [ ] **Step 1: Replace the injury-refusal block through weapon/cooldown resolution**
+- [x] **Step 1: Replace the injury-refusal block through weapon/cooldown resolution**
 
 Find:
 
@@ -415,7 +415,7 @@ Replace with:
   let hole = null;
 ```
 
-- [ ] **Step 2: Apply the strength/arm-injury multiplier to the *graduated* damage sites only**
+- [x] **Step 2: Apply the strength/arm-injury multiplier to the *graduated* damage sites only**
 
 Find:
 
@@ -455,7 +455,7 @@ Replace with:
 
 (The `dick` and `ass` branches, and the `roll === 100` branch above the carrot `if`, are intentionally left untouched — see the design spec's explanation of why strength doesn't apply to them.)
 
-- [ ] **Step 3: Apply the same multiplier to the generic (non-carrot) damage branch**
+- [x] **Step 3: Apply the same multiplier to the generic (non-carrot) damage branch**
 
 Find:
 
@@ -487,7 +487,7 @@ Replace with:
   }
 ```
 
-- [ ] **Step 4: Award XP alongside the existing crit determination**
+- [x] **Step 4: Award XP alongside the existing crit determination**
 
 Find:
 
@@ -525,7 +525,7 @@ Replace with:
   if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass')) {
 ```
 
-- [ ] **Step 5: Remove the now-fully-unused `PVP_INJURY_REFUSAL_TEXT` constant**
+- [x] **Step 5: Remove the now-fully-unused `PVP_INJURY_REFUSAL_TEXT` constant**
 
 Find:
 
@@ -541,12 +541,12 @@ Replace with: (delete entirely — remove these 5 lines)
 
 Verify no other reference remains: `grep -n PVP_INJURY_REFUSAL_TEXT bot.js` must return nothing.
 
-- [ ] **Step 6: Verify with a syntax check**
+- [x] **Step 6: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 7: Verify the accuracy-threshold clamp, dodge-chance clamp, and damage-multiplier math in isolation**
+- [x] **Step 7: Verify the accuracy-threshold clamp, dodge-chance clamp, and damage-multiplier math in isolation**
 
 ```bash
 node -e "
@@ -568,7 +568,7 @@ function dodgeChance(agility, legInjury) {
 console.log('0 agility, no injury:', dodgeChance(0, false), 'expected 50');
 console.log('1000 agility (clamp ceiling):', dodgeChance(1000, false), 'expected 90');
 console.log('0 agility, leg injury:', dodgeChance(0, true), 'expected 40');
-console.log('20 agility, leg injury:', dodgeChance(20, true), 'expected 40');
+console.log('20 agility, leg injury:', dodgeChance(20, true), 'expected 50');
 
 const STRENGTH_DAMAGE_PER_POINT = 0.02, ARM_INJURY_DAMAGE_MULT = 0.9;
 function dmg(rawDmg, weaponMult, strength, armInjury) {
@@ -590,13 +590,13 @@ base 90 (dodge buff), 200 accuracy, head injury (clamp floor still wins): 5 expe
 0 agility, no injury: 50 expected 50
 1000 agility (clamp ceiling): 90 expected 90
 0 agility, leg injury: 40 expected 40
-20 agility, leg injury: 40 expected 40
+20 agility, leg injury: 50 expected 50
 10 raw, 1.5x weapon, 0 strength, no injury: 15 expected 15
 10 raw, 1.5x weapon, 50 strength, no injury: 30 expected 30
 10 raw, 1.5x weapon, 0 strength, arm injury: 14 expected 14 (13.5 rounds to 14)
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add bot.js
