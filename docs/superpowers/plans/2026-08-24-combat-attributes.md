@@ -927,7 +927,7 @@ git push
 
 **Note on line numbers:** locate by surrounding text.
 
-- [ ] **Step 1: Update `/kick`'s line and add `/levelup`**
+- [x] **Step 1: Update `/kick`'s line and add `/levelup`**
 
 Find:
 
@@ -946,12 +946,12 @@ Replace with:
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
