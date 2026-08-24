@@ -303,6 +303,12 @@ for (const [column, def] of [['accuracy', 'INTEGER NOT NULL DEFAULT 0'], ['stren
     db.exec(`ALTER TABLE pvp_stats ADD COLUMN ${column} ${def}`);
   } catch {}
 }
+// /kick is now gated on both sides being a registered "воин" — see
+// /warrior below. Starts at 0 (false) for everyone, including existing
+// rows, so the whole playerbase re-registers under the new system.
+try {
+  db.exec('ALTER TABLE pvp_stats ADD COLUMN is_warrior INTEGER NOT NULL DEFAULT 0');
+} catch {}
 
 // Lightweight username/first-name cache keyed by user_id, refreshed on
 // every incoming message (see the main message handler below) — nothing
@@ -441,6 +447,49 @@ db.exec(`
   )
   GROUP BY user_id
 `);
+
+// Generic one-time-migration ledger — a plain "already deployed" schema
+// change (an ALTER, a new table) is naturally idempotent and safe to
+// rerun every boot, but a genuine one-off DATA fix (resetting existing
+// rows) is not: rerunning it on every restart would keep undoing
+// legitimate gameplay that happens afterward. Each migration name runs
+// at most once, ever, across all future restarts.
+db.exec('CREATE TABLE IF NOT EXISTS migrations_run (name TEXT PRIMARY KEY, run_at INTEGER)');
+function runOnce(name, fn) {
+  if (db.prepare('SELECT 1 FROM migrations_run WHERE name = ?').get(name)) return;
+  fn();
+  db.prepare('INSERT INTO migrations_run (name, run_at) VALUES (?, ?)').run(name, Math.floor(Date.now() / 1000));
+}
+
+// Returns every real weapon to its originally-seeded owner. Weapons
+// with a seed_username (everyone except crutch) go back to NULL
+// owner_user_id/owner_username, which the existing lazy-resolution
+// UPDATE in the main message handler re-populates the next time that
+// person writes anything — same mechanism as the very first seeding.
+// crutch has no seed_username (see its own seed row's comment above),
+// so its owner_user_id is restored directly.
+runOnce('2026-08-24-reset-weapons-to-original-owners', () => {
+  db.exec(
+    "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = NULL, owner_username = NULL, dropped_chat_id = NULL " +
+    "WHERE weapon_key IN ('bat', 'axe', 'scissors', 'carrot', 'horns')"
+  );
+  db.prepare(
+    "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = 736180284, owner_username = NULL, dropped_chat_id = NULL WHERE weapon_key = 'crutch'"
+  ).run();
+});
+
+// Zeroes every fighter's tracked combat stats and attributes — a fresh
+// start alongside the new /warrior gate below. first_tracked_at resets
+// to now too, so /me's "time outside чулан" doesn't show a huge
+// leftover number computed against a now-stale old baseline. Does NOT
+// touch health/energy/injuries/mutes/hidden state — none of that is
+// "статистика", it's live game state, out of scope for this reset.
+runOnce('2026-08-24-reset-combat-stats', () => {
+  db.exec(
+    "UPDATE pvp_stats SET crit_count = 0, injuries_dealt = 0, hidden_seconds = 0, " +
+    "accuracy = 0, strength = 0, agility = 0, endurance = 0, xp = 0, first_tracked_at = strftime('%s','now')"
+  );
+});
 
 // --- Animal definitions ---
 const ANIMALS = {
@@ -1063,6 +1112,14 @@ function consumeEnergy(userId) {
 function ensureStatsRow(userId) {
   db.prepare('INSERT OR IGNORE INTO pvp_stats (user_id, first_tracked_at) VALUES (?, ?)').run(userId, Math.floor(Date.now() / 1000));
 }
+// /kick gate (see /warrior below) — deliberately does NOT call
+// ensureStatsRow: someone who's never touched anything legitimately has
+// no pvp_stats row at all, and that must read as "not a warrior", not
+// silently create a row for them.
+function isWarrior(userId) {
+  const row = db.prepare('SELECT is_warrior FROM pvp_stats WHERE user_id = ?').get(userId);
+  return !!row && row.is_warrior === 1;
+}
 function getStats(userId) {
   ensureStatsRow(userId);
   return db.prepare('SELECT crit_count, injuries_dealt, hidden_seconds, first_tracked_at, accuracy, strength, agility, endurance, xp FROM pvp_stats WHERE user_id = ?').get(userId);
@@ -1432,6 +1489,26 @@ bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
   ).catch(() => {});
 });
 
+// /warrior — the only way to become eligible for /kick (see the
+// isWarrior gate in performKick below), one-time per person. Grants
+// 300 XP (3 points under the existing floor(xp/100) formula) rather
+// than any new interactive UI — the person then spends them the same
+// way as any other banked points, via /levelup, same as everyone else.
+bot.onText(/\/warrior\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  if (isWarrior(msg.from.id)) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, ты уже воин.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  ensureStatsRow(msg.from.id);
+  db.prepare('UPDATE pvp_stats SET is_warrior = 1, xp = xp + 300 WHERE user_id = ?').run(msg.from.id);
+  bot.sendMessage(
+    msg.chat.id,
+    `⚔️ ${actorLabel} теперь воин! Начислено 300 опыта (3 очка) — вложи их: /levelup точность|сила|ловкость|выносливость (можно все 3 раза в одну характеристику или по-разному).`,
+    threadOpts(msg)
+  ).catch(() => {});
+});
+
 // All of /kick's actual combat logic, factored out of the onText handler
 // below (which only parses a target and weapon slot from the command
 // text) so it depends on plain values instead of the raw Telegram
@@ -1445,6 +1522,14 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
 
   if (target.id === attacker.id) {
     bot.sendMessage(chatId, `${actorLabel}, нельзя ударить самого себя!`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (!isWarrior(attacker.id)) {
+    bot.sendMessage(chatId, `${actorLabel}, ты ещё не воин — введи /warrior, чтобы начать драться.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (!isWarrior(target.id)) {
+    bot.sendMessage(chatId, `${targetLabel} ещё не воин — его нельзя атаковать, пока он не введёт /warrior.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
   if (isHidden(target.id)) {
@@ -2704,7 +2789,8 @@ bot.onText(/\/help\b/, (msg) => {
     '',
     'PvP:',
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
-    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить, при нескольких — выбор какое; тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
+    '/warrior — стать воином (один раз навсегда); без этого ни атаковать, ни быть целью /kick нельзя; сразу даёт 300 опыта (3 очка) на характеристики — вложить через /levelup',
+    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
