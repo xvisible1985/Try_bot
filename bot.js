@@ -316,16 +316,17 @@ for (const [column, def] of [['accuracy', 'INTEGER NOT NULL DEFAULT 0'], ['stren
 try {
   db.exec('ALTER TABLE pvp_stats ADD COLUMN is_warrior INTEGER NOT NULL DEFAULT 0');
 } catch {}
-// Stockpiled arena-crate elixirs (see /pick and /elixir further below)
-// — unlike the knife, these aren't applied the instant they're picked
-// up; they bank here until spent on demand.
+// Stockpiled arena-crate elixirs (see /pick, /restore, and /recharge
+// further below) — unlike the knife, these aren't applied the instant
+// they're picked up; they bank here until spent on demand.
 for (const [column, def] of [['health_elixirs', 'INTEGER NOT NULL DEFAULT 0'], ['energy_elixirs', 'INTEGER NOT NULL DEFAULT 0']]) {
   try {
     db.exec(`ALTER TABLE pvp_stats ADD COLUMN ${column} ${def}`);
   } catch {}
 }
 
-// Arena crate drops (see arenaTick, /pick, and /elixir further below).
+// Arena crate drops (see arenaTick, /pick, /restore, and /recharge
+// further below).
 // current_batch_id increments on every drop; arena_crates.batch_id ties
 // each crate to exactly one drop, which is what makes "1 crate per
 // player per drop" checkable — a claimed_by row from an OLDER batch
@@ -1764,11 +1765,11 @@ bot.onText(/\/pick\b/i, (msg) => {
   if (candidate.crate_type === 'health_elixir') {
     ensureStatsRow(msg.from.id);
     db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs + 1 WHERE user_id = ?').run(msg.from.id);
-    bot.sendMessage(msg.chat.id, `📦🧪❤️ ${actorLabel} открыл ящик и нашёл эликсир здоровья! (использовать — /elixir здоровье)`, threadOpts(msg)).catch(() => {});
+    bot.sendMessage(msg.chat.id, `📦🧪❤️ ${actorLabel} открыл ящик и нашёл эликсир здоровья! (использовать — /restore)`, threadOpts(msg)).catch(() => {});
   } else if (candidate.crate_type === 'energy_elixir') {
     ensureStatsRow(msg.from.id);
     db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs + 1 WHERE user_id = ?').run(msg.from.id);
-    bot.sendMessage(msg.chat.id, `📦🧪⚡ ${actorLabel} открыл ящик и нашёл эликсир энергии! (использовать — /elixir энергия)`, threadOpts(msg)).catch(() => {});
+    bot.sendMessage(msg.chat.id, `📦🧪⚡ ${actorLabel} открыл ящик и нашёл эликсир энергии! (использовать — /recharge)`, threadOpts(msg)).catch(() => {});
   } else {
     const expiresAt = Math.floor(Date.now() / 1000) + 3 * 3600;
     db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ?, expires_at = ? WHERE weapon_key = 'knife'").run(msg.from.id, msg.from.username, expiresAt);
@@ -1776,50 +1777,55 @@ bot.onText(/\/pick\b/i, (msg) => {
   }
 });
 
-// /elixir — spends one stockpiled elixir (see /pick above). No
-// argument shows the current stockpile instead of guessing, same
-// pattern as bare /levelup.
-const ELIXIR_KIND_NAMES = { 'здоровье': 'health', 'зд': 'health', 'энергия': 'energy', 'эн': 'energy' };
-bot.onText(/\/elixir(?:\s+(\S+))?/i, (msg, match) => {
+// /inventory — shows the current elixir stockpile (see /pick above).
+bot.onText(/\/inventory\b/i, (msg) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-  const arg = match[1] ? match[1].toLowerCase() : null;
-  const kind = arg ? ELIXIR_KIND_NAMES[arg] : null;
+  const stats = getStats(msg.from.id);
+  bot.sendMessage(
+    msg.chat.id,
+    `${actorLabel}, инвентарь: 🧪❤️ эликсиров здоровья ×${stats.health_elixirs} (/heal), 🧪⚡ эликсиров энергии ×${stats.energy_elixirs} (/recharge)`,
+    threadOpts(msg)
+  ).catch(() => {});
+});
 
-  if (!kind) {
-    const stats = getStats(msg.from.id);
-    bot.sendMessage(
-      msg.chat.id,
-      `${actorLabel}, эликсиров: 🧪❤️ здоровья ×${stats.health_elixirs}, 🧪⚡ энергии ×${stats.energy_elixirs}. Использовать: /elixir здоровье|энергия`,
-      threadOpts(msg)
-    ).catch(() => {});
-    return;
-  }
-
-  const column = kind === 'health' ? 'health_elixirs' : 'energy_elixirs';
-  const spent = db.prepare(`UPDATE pvp_stats SET ${column} = ${column} - 1 WHERE user_id = ? AND ${column} > 0 RETURNING ${column}`).get(msg.from.id);
+// /restore — spends one stockpiled health elixir: +100 HP, capped at
+// max_health. Not named /heal - that's already a separate admin-only
+// command (clears an injury/bleed on a target by reply) further below;
+// node-telegram-bot-api's onText fires every matching handler on a
+// message, so reusing that name would have fired both on every /heal.
+bot.onText(/\/restore\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const spent = db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs - 1 WHERE user_id = ? AND health_elixirs > 0 RETURNING health_elixirs').get(msg.from.id);
   if (!spent) {
-    bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя нет эликсиров ${kind === 'health' ? 'здоровья' : 'энергии'}.`, threadOpts(msg)).catch(() => {});
+    bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя нет эликсиров здоровья — глянь /inventory.`, threadOpts(msg)).catch(() => {});
     return;
   }
+  const health = getUserHealth(msg.from.id);
+  const after = Math.min(health.max_health, health.health + 100);
+  db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(after, msg.from.id);
+  bot.sendMessage(
+    msg.chat.id,
+    `🧪❤️ ${actorLabel} выпил эликсир здоровья: ${health.health} -> ${after} ХП. Осталось: ${spent.health_elixirs}.`,
+    threadOpts(msg)
+  ).catch(() => {});
+});
 
-  if (kind === 'health') {
-    const health = getUserHealth(msg.from.id);
-    const after = Math.min(health.max_health, health.health + 100);
-    db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(after, msg.from.id);
-    bot.sendMessage(
-      msg.chat.id,
-      `🧪❤️ ${actorLabel} выпил эликсир здоровья: ${health.health} -> ${after} ХП. Осталось: ${spent.health_elixirs}.`,
-      threadOpts(msg)
-    ).catch(() => {});
-  } else {
-    const before = getUserHealth(msg.from.id);
-    db.prepare('UPDATE user_health SET energy = max_energy WHERE user_id = ?').run(msg.from.id);
-    bot.sendMessage(
-      msg.chat.id,
-      `🧪⚡ ${actorLabel} выпил эликсир энергии: ${before.energy} -> ${before.max_energy}. Осталось: ${spent.energy_elixirs}.`,
-      threadOpts(msg)
-    ).catch(() => {});
+// /recharge — spends one stockpiled energy elixir: full refill to
+// max_energy.
+bot.onText(/\/recharge\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const spent = db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs - 1 WHERE user_id = ? AND energy_elixirs > 0 RETURNING energy_elixirs').get(msg.from.id);
+  if (!spent) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя нет эликсиров энергии — глянь /inventory.`, threadOpts(msg)).catch(() => {});
+    return;
   }
+  const before = getUserHealth(msg.from.id);
+  db.prepare('UPDATE user_health SET energy = max_energy WHERE user_id = ?').run(msg.from.id);
+  bot.sendMessage(
+    msg.chat.id,
+    `🧪⚡ ${actorLabel} выпил эликсир энергии: ${before.energy} -> ${before.max_energy}. Осталось: ${spent.energy_elixirs}.`,
+    threadOpts(msg)
+  ).catch(() => {});
 });
 
 // All of /kick's actual combat logic, factored out of the onText handler
@@ -3162,7 +3168,9 @@ bot.onText(/\/help\b/, (msg) => {
     '/warrior — стать воином (один раз навсегда); без этого ни атаковать, ни быть целью /kick нельзя; сразу даёт 300 опыта (3 очка) на характеристики — вложить через /levelup',
     '/warriors — список всех воинов: здоровье, иконки оружия в руках, уровень',
     '/pick — забрать ящик из последней волны, упавшей на арену (раз в 3 часа, кроме 00:00-08:00; 5 ящиков: 2 эликсира здоровья, 2 эликсира энергии, ржавый нож ×1.5 урона на 3 часа; только в чате «Поединки», только воинам, 1 ящик в одни руки за волну)',
-    '/elixir здоровье|энергия — выпить накопленный эликсир (здоровье: +100 ХП; энергия: полное восстановление); без аргумента — сколько накоплено',
+    '/inventory — сколько накоплено эликсиров (см. /pick)',
+    '/restore — выпить эликсир здоровья: +100 ХП, не выше максимума',
+    '/recharge — выпить эликсир энергии: полное восстановление',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
