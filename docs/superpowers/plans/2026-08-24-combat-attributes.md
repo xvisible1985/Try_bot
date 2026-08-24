@@ -754,7 +754,7 @@ git push
 
 **Note on line numbers:** locate the end of `/find`'s handler (`bot.onText(/\/find\b/, ...)`) by its closing `});` — insert this new command directly after it.
 
-- [ ] **Step 1: Add the `/levelup` handler**
+- [x] **Step 1: Add the `/levelup` handler**
 
 Find:
 
@@ -815,12 +815,12 @@ bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Verify the stat-name matching and point-spend flow in isolation**
+- [x] **Step 3: Verify the stat-name matching and point-spend flow in isolation**
 
 ```bash
 node -e "
@@ -858,7 +858,7 @@ max_energy after endurance spend: 11 expected 11
 spend 2 (now 0 available): no points expected no points
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add bot.js
