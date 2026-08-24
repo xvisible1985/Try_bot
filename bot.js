@@ -1283,6 +1283,13 @@ function damageHuman(userId, chatId, username, damage) {
 // unarmed fallback) rather than just userId: the pause is "on the
 // weapon", so swinging a different one you hold — or going bare-handed —
 // isn't gated by a swing you just took with another.
+// All /kick combat is confined to this one chat ("Поединки") — a real
+// weapon fumble-dropped by a nat-0 used to end up in whatever chat
+// /kick happened to be run from, which meant a bat could fall (and get
+// picked up) in a completely unrelated chat. Restricting /kick itself
+// to a single arena chat means the drop's dropped_chat_id is always
+// this same chat too, closing that off entirely.
+const ARENA_CHAT_ID = -1003310018032;
 const pvpCooldowns = new Map();
 const PVP_COOLDOWN_MS = 60 * 1000;
 const MIN_PVP_COOLDOWN_MS = PVP_COOLDOWN_MS * 0.2; // floor at 20% of base (12s) regardless of agility
@@ -1672,6 +1679,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   const actorLabel = attacker.username ? `@${attacker.username}` : attacker.firstName;
   const targetLabel = target.username ? `@${target.username}` : target.firstName;
 
+  if (chatId !== ARENA_CHAT_ID) {
+    bot.sendMessage(chatId, `${actorLabel}, бои разрешены только в чате «Поединки» — пиши /kick там.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
   if (target.id === attacker.id) {
     bot.sendMessage(chatId, `${actorLabel}, нельзя ударить самого себя!`, threadOpts(msgLike)).catch(() => {});
     return;
@@ -2955,9 +2966,10 @@ bot.on('message', async (msg) => {
   }
 });
 
-// --- Chat ID lookup (admin-only utility) ---
-bot.onText(/\/chatid\b/, async (msg) => {
-  if (!await isAdmin(msg)) return;
+// --- Chat ID lookup (no admin gate — not sensitive info, and requiring
+// real Telegram admin/creator status here just meant a silent no-op
+// with zero feedback for anyone who wasn't one) ---
+bot.onText(/\/chatid\b/, (msg) => {
   bot.sendMessage(msg.chat.id, `chat_id: ${msg.chat.id}`, threadOpts(msg)).catch(() => {});
 });
 
@@ -2995,7 +3007,7 @@ bot.onText(/\/help\b/, (msg) => {
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/warrior — стать воином (один раз навсегда); без этого ни атаковать, ни быть целью /kick нельзя; сразу даёт 300 опыта (3 очка) на характеристики — вложить через /levelup',
     '/warriors — список всех воинов: здоровье, иконки оружия в руках, уровень',
-    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
+    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
