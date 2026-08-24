@@ -380,6 +380,17 @@ for (const [column, def] of [['bleed_until', 'INTEGER'], ['bleed_chat_id', 'INTE
     db.exec(`ALTER TABLE user_health ADD COLUMN ${column} ${def}`);
   } catch {}
 }
+// Больничка — automatic recovery state entered on knockout (see
+// docs/superpowers/specs/2026-08-24-hospital-and-defend-design.md).
+// NULL when not hospitalized; a unix timestamp (seconds) marking entry
+// otherwise. Combined with health < HOSPITAL_EXIT_HEALTH (see
+// isHospitalized below) to decide "still hospitalized" — there is no
+// separate boolean column. Same ALTER idiom as energy/bleed above.
+for (const [column, def] of [['hospitalized_since', 'INTEGER']]) {
+  try {
+    db.exec(`ALTER TABLE user_health ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
 // Critical-hit injuries from "Драка" (see troll-bot) — one of 'arm' | 'leg'
 // | 'head', always exactly one at a time (a fresh crit overwrites), lazily
 // expired 24h after being set (checked at read time, same idiom as mutes/
@@ -1153,6 +1164,8 @@ const MIN_ENERGY_REGEN_INTERVAL_SECONDS = 300;  // floor at 5 min (base is 20 mi
 const XP_PER_HIT = 1;
 const XP_PER_CRIT = 5;
 const XP_PER_NAT100 = 15;
+const HOSPITAL_EXIT_HEALTH = 30;      // больничка released you once health reaches this
+const HOSPITAL_REGEN_MULTIPLIER = 2;  // regen rate while hospitalized, vs. the normal HEALTH_REGEN_PER_HOUR baseline
 
 // 20-minute чулан lockout for anyone who actually lands a hit (see
 // /hide below) — in-memory, same idiom as hideCooldowns/pvpCooldowns,
@@ -1304,6 +1317,19 @@ function isHidden(userId) {
   return false;
 }
 
+// Больничка protection — lazily read, same check-and-clear idiom as
+// isHidden. A player counts as hospitalized only while BOTH a non-NULL
+// hospitalized_since exists AND health is still under the exit
+// threshold; the moment either healthRegenTick or a direct read finds
+// health >= HOSPITAL_EXIT_HEALTH, the flag self-clears right here.
+function isHospitalized(userId) {
+  const row = db.prepare('SELECT hospitalized_since, health FROM user_health WHERE user_id = ?').get(userId);
+  if (!row || row.hospitalized_since === null) return false;
+  if (row.health < HOSPITAL_EXIT_HEALTH) return true;
+  db.prepare('UPDATE user_health SET hospitalized_since = NULL WHERE user_id = ?').run(userId);
+  return false;
+}
+
 // UPDATE...RETURNING keeps the floor-then-read atomic against the regen
 // tick's own concurrent writes (see healthRegenTick below). Also stamps
 // last_regen_at = now: healthRegenTick only updates that column while
@@ -1318,7 +1344,10 @@ function damageHuman(userId, chatId, username, damage) {
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('UPDATE user_health SET health = MAX(0, health - ?), last_regen_at = ? WHERE user_id = ? RETURNING health').get(damage, now, userId);
   if (row.health === 0) {
-    muteUser(userId, chatId, username, 0, 'драка', 30 * 60 * 1000);
+    // COALESCE: re-flooring an already-hospitalized player to 0 again
+    // (e.g. a second hit landing before they've regenerated at all)
+    // must not reset their entry timestamp.
+    db.prepare('UPDATE user_health SET hospitalized_since = COALESCE(hospitalized_since, ?) WHERE user_id = ?').run(now, userId);
   }
   return row.health;
 }
