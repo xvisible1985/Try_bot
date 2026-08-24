@@ -3354,6 +3354,15 @@ bot.on('message_reaction', async (reaction) => {
   bot.sendMessage(reaction.chat.id, `🦠 ${author.username} заразился(-ась) от ${reactorNick}!`, author.threadId ? { message_thread_id: author.threadId } : {}).catch(() => {});
 });
 
+// Tracks /give Stage-2 offer messages already resolved (accepted or
+// declined), keyed by message_id — without this, two rapid clicks on the
+// same "Принять" button would each independently pass the elixir count
+// check and double-transfer a stackable item (the weapon path doesn't
+// need this since ownership is naturally single-use, but elixirs are
+// fungible so "count > 0" alone can't tell a replay from a legitimate
+// second spend).
+const resolvedGiveOffers = new Set();
+
 bot.on('polling_error', (err) => console.error('polling_error:', err.message));
 bot.on('message', (msg) => console.log('сообщение от:', msg.from?.username, 'id:', msg.from?.id, 'текст:', msg.text));
 
@@ -3482,6 +3491,12 @@ bot.on('callback_query', async (query) => {
 
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
+
+    if (resolvedGiveOffers.has(messageId)) {
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+    resolvedGiveOffers.add(messageId);
+
     const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
     const senderKnown = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(senderId);
     const senderLabel = senderKnown ? (senderKnown.username ? `@${senderKnown.username}` : senderKnown.first_name) : `игрок ${senderId}`;
