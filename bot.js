@@ -2955,6 +2955,12 @@ bot.on('message', async (msg) => {
   }
 });
 
+// --- Chat ID lookup (admin-only utility) ---
+bot.onText(/\/chatid\b/, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  bot.sendMessage(msg.chat.id, `chat_id: ${msg.chat.id}`, threadOpts(msg)).catch(() => {});
+});
+
 // --- Help ---
 bot.onText(/\/help\b/, (msg) => {
   const text = [
