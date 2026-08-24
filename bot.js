@@ -1325,6 +1325,13 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
     return;
   }
 
+  const lastAttack = combatLockouts.get(msg.from.id);
+  if (lastAttack && Date.now() - lastAttack < NO_HIDE_AFTER_ATTACK_MS) {
+    const remaining = Math.ceil((NO_HIDE_AFTER_ATTACK_MS - (Date.now() - lastAttack)) / 60000);
+    bot.sendMessage(msg.chat.id, `${actorLabel}, только что дрался — нельзя прятаться ещё ${remaining} мин.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
   const last = hideCooldowns.get(msg.from.id);
   const elapsed = last ? Date.now() - last : Infinity;
   if (elapsed < HIDE_COOLDOWN_MS) {
