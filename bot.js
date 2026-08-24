@@ -3497,6 +3497,15 @@ function arenaTick() {
   }
 }
 setInterval(arenaTick, HEALTH_REGEN_TICK_MS);
+// First check 1 minute after boot instead of waiting for the first
+// 10-minute interval tick — arenaTick's own condition (>= 3h since
+// last_drop_at, which starts NULL/treated as 0) already fires an
+// immediate real drop on a fresh deploy, this just moves that moment
+// up from "up to 10 minutes" to "1 minute". Still fully subject to the
+// existing night-hour check, so a deploy during 00:00-08:00 correctly
+// waits like any other tick would. Safe to run alongside the interval
+// above — arenaTick no-ops on its own if nothing's actually due yet.
+setTimeout(arenaTick, 60 * 1000);
 
 // Bleed tick (see applyBleed and every `weapon.key === 'scissors'` call
 // site) — 1-minute granularity because the mechanic itself is 1 HP/minute,
