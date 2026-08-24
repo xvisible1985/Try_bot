@@ -1404,6 +1404,49 @@ bot.onText(/\/find\b/, (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
+// /levelup — spends one banked attribute point (see getStats/pvp_stats
+// and docs/superpowers/specs/2026-08-24-combat-attributes-design.md
+// for the available-points formula). statColumn is only ever one of
+// these 4 hardcoded strings from LEVELUP_STAT_NAMES — never raw user
+// input — so interpolating it into the UPDATE below isn't a SQL
+// injection risk despite not being a bound parameter.
+const LEVELUP_STAT_NAMES = {
+  'точность': 'accuracy', 'точн': 'accuracy',
+  'сила': 'strength', 'сил': 'strength',
+  'ловкость': 'agility', 'ловк': 'agility',
+  'выносливость': 'endurance', 'вын': 'endurance',
+};
+const LEVELUP_STAT_LABELS = { accuracy: 'точность', strength: 'сила', agility: 'ловкость', endurance: 'выносливость' };
+bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const arg = match[1] ? match[1].toLowerCase() : null;
+  const statColumn = arg ? LEVELUP_STAT_NAMES[arg] : null;
+  if (!statColumn) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, укажи характеристику: /levelup точность|сила|ловкость|выносливость`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  const stats = getStats(msg.from.id);
+  const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+  if (available <= 0) {
+    const needed = 100 - (stats.xp % 100);
+    bot.sendMessage(msg.chat.id, `${actorLabel}, нет свободных очков — ещё ${needed} XP до следующего.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+
+  db.prepare(`UPDATE pvp_stats SET ${statColumn} = ${statColumn} + 1 WHERE user_id = ?`).run(msg.from.id);
+  if (statColumn === 'endurance') {
+    db.prepare('UPDATE user_health SET max_energy = max_energy + 1 WHERE user_id = ?').run(msg.from.id);
+  }
+  const newValue = stats[statColumn] + 1;
+  const remaining = available - 1;
+  bot.sendMessage(
+    msg.chat.id,
+    `${actorLabel}, ${LEVELUP_STAT_LABELS[statColumn]} теперь ${newValue}. Осталось очков: ${remaining}.`,
+    threadOpts(msg)
+  ).catch(() => {});
+});
+
 // All of /kick's actual combat logic, factored out of the onText handler
 // below (which only parses a target and weapon slot from the command
 // text) so it depends on plain values instead of the raw Telegram
