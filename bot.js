@@ -1377,8 +1377,14 @@ bot.onText(/\/me\b/, (msg) => {
   lines.push(`🐰 В чулане провёл: ${formatDuration(liveHiddenSeconds)}`);
   lines.push(`🏃 Вне чулана: ${formatDuration(visibleSeconds)}`);
 
-  const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+  // Level is just floor(xp/100) — the same number that already drives
+  // available points (available + already-spent points always sums back
+  // to this), just surfaced directly instead of making people do the
+  // division themselves. No cap: keeps climbing as long as xp does.
+  const level = Math.floor(stats.xp / 100);
+  const available = level - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
   const xpToNext = stats.xp % 100 === 0 ? 0 : 100 - (stats.xp % 100);
+  lines.push(`🏆 Уровень: ${level}`);
   lines.push(`📊 Точность: ${stats.accuracy} | Сила: ${stats.strength} | Ловкость: ${stats.agility} | Выносливость: ${stats.endurance}`);
   lines.push(`✨ Опыт: ${stats.xp} (ещё ${xpToNext} до следующего очка)${available > 0 ? ` — доступно очков: ${available}` : ''}`);
 
