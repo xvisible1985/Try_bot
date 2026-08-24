@@ -875,7 +875,7 @@ git push
 
 **Note on line numbers:** locate by surrounding text.
 
-- [ ] **Step 1: Add the attributes/XP lines**
+- [x] **Step 1: Add the attributes/XP lines**
 
 Find:
 
@@ -905,12 +905,12 @@ Replace with:
 });
 ```
 
-- [ ] **Step 2: Verify with a syntax check**
+- [x] **Step 2: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add bot.js
