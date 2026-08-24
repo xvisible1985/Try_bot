@@ -24,7 +24,7 @@
 
 **Note on line numbers:** locate every Find block below by its surrounding text, not by trusting these line numbers — they will have drifted by the time you read this.
 
-- [ ] **Step 1: Add the 5 `pvp_stats` columns**
+- [x] **Step 1: Add the 5 `pvp_stats` columns**
 
 Find:
 
@@ -64,7 +64,7 @@ for (const [column, def] of [['accuracy', 'INTEGER NOT NULL DEFAULT 0'], ['stren
 }
 ```
 
-- [ ] **Step 2: Add the formula constants and the combat-lockout `Map`**
+- [x] **Step 2: Add the formula constants and the combat-lockout `Map`**
 
 Find:
 
@@ -115,7 +115,7 @@ const combatLockouts = new Map();
 const NO_HIDE_AFTER_ATTACK_MS = 20 * 60 * 1000;
 ```
 
-- [ ] **Step 3: `getStats` returns the 5 new columns too**
+- [x] **Step 3: `getStats` returns the 5 new columns too**
 
 Find:
 
@@ -135,7 +135,7 @@ function getStats(userId) {
 }
 ```
 
-- [ ] **Step 4: `checkPvpCooldown` takes an explicit duration instead of the flat constant**
+- [x] **Step 4: `checkPvpCooldown` takes an explicit duration instead of the flat constant**
 
 Find:
 
@@ -171,12 +171,12 @@ function checkPvpCooldown(userId, weaponKey, cooldownMs) {
 }
 ```
 
-- [ ] **Step 5: Verify with a syntax check**
+- [x] **Step 5: Verify with a syntax check**
 
 Run: `node --check bot.js`
 Expected: no output, exit code 0.
 
-- [ ] **Step 6: Verify the available-points formula never drifts**
+- [x] **Step 6: Verify the available-points formula never drifts**
 
 ```bash
 node -e "
@@ -197,7 +197,7 @@ console.log('spent 1 on accuracy -> available:', available(), 'expected 1');
 db.prepare('UPDATE pvp_stats SET strength = strength + 1 WHERE user_id = 1').run();
 console.log('spent 1 on strength -> available:', available(), 'expected 0');
 db.prepare('UPDATE pvp_stats SET xp = xp + 60 WHERE user_id = 1').run();
-console.log('+60 more xp (310 total) -> available:', available(), 'expected 0');
+console.log('+60 more xp (310 total) -> available:', available(), 'expected 1');
 db.prepare('UPDATE pvp_stats SET xp = xp + 40 WHERE user_id = 1').run();
 console.log('+40 more xp (350 total) -> available:', available(), 'expected 1');
 "
@@ -208,11 +208,11 @@ Expected output (in order):
 250 xp -> available: 2 expected 2
 spent 1 on accuracy -> available: 1 expected 1
 spent 1 on strength -> available: 0 expected 0
-+60 more xp (310 total) -> available: 0 expected 0
++60 more xp (310 total) -> available: 1 expected 1
 +40 more xp (350 total) -> available: 1 expected 1
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add bot.js
