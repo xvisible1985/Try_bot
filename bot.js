@@ -3218,10 +3218,26 @@ bot.onText(/\/chatid\b/, (msg) => {
 });
 
 // --- Help ---
+// Split into one index command plus a command per section — the combined
+// single-message /help this replaced rendered to 4427 characters, over
+// Telegram's 4096 hard limit for sendMessage, so it was silently failing
+// in production (no .catch() on that call either). Each section below is
+// comfortably under the limit on its own; PvP, the largest, renders to
+// ~3000.
 bot.onText(/\/help\b/, (msg) => {
   const text = [
-    'Команды бота (только для админов)',
-    '',
+    'Разделы команд — выбери нужный:',
+    '/helpstatus — статусы для юмора (ответом на сообщение) и их отмена',
+    '/helpmute — мут',
+    '/helpmisc — прочие команды (дайс, попытка, список статусов/админов)',
+    '/helppvp — PvP: бои, оружие, эликсиры, характеристики',
+    '/helpvirus — DedoVirus.2026 (эпидемия)',
+  ].join('\n');
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/helpstatus\b/, (msg) => {
+  const text = [
     'Статусы — ответ на сообщение пользователя:',
     '/pig /cat /fox /dog /cow /donkey — статус животного (мат → звук)',
     '/ramzan — добавляет "Дон" после каждого 3-го слова (стакуется)',
@@ -3234,19 +3250,34 @@ bot.onText(/\/help\b/, (msg) => {
     'Отмена статусов:',
     '/unpig /uncat /unfox /undog /uncow /undonkey',
     '/unramzan /unfisher /unestet /unpodhalim /unmolchun',
-    '',
+  ].join('\n');
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/helpmute\b/, (msg) => {
+  const text = [
     'Мут:',
     '/mute [10m|2h|1d] — замутить (ответ на сообщение)',
     '/unmute — размутить',
     '/mutes — список замутов',
-    '',
+  ].join('\n');
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/helpmisc\b/, (msg) => {
+  const text = [
     'Прочее:',
     '/animals — список всех активных статусов',
     '/names — список администраторов',
     '/try [текст] — попытка (0–100)',
     '/dice [максимум] — кубик',
     '** [текст] — действие от третьего лица',
-    '',
+  ].join('\n');
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/helppvp\b/, (msg) => {
+  const text = [
     'PvP:',
     '/me — здоровье, энергия, травма, укрытие и статистика (крит. ударов нанесено, травм нанесено, время в чулане/вне его)',
     '/warrior — стать воином (один раз навсегда); без этого ни атаковать, ни быть целью /kick нельзя; сразу даёт 300 опыта (3 очка) на характеристики — вложить через /levelup',
@@ -3263,7 +3294,12 @@ bot.onText(/\/help\b/, (msg) => {
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
-    '',
+  ].join('\n');
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/helpvirus\b/, (msg) => {
+  const text = [
     'DedoVirus.2026 (эпидемия):',
     '/0patient — назначить нулевого пациента (ответ на сообщение, админ)',
     '/epidemic — список заражённых: стадия, штамм, процедуры, иммунные',
@@ -3274,7 +3310,7 @@ bot.onText(/\/help\b/, (msg) => {
     '/ukol /klizma /topor /massage — процедуры (ответ на сообщение, админ)',
     '/quarantine — карантин на 24ч: риск заражения ×0.4, шанс выздоровления ×2 (админ)',
   ].join('\n');
-  bot.sendMessage(msg.chat.id, text, threadOpts(msg));
+  bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
 });
 
 // --- Game commands ---
