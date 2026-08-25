@@ -1516,6 +1516,11 @@ bot.onText(/\/me\b/, (msg) => {
   if (isHospitalized(msg.from.id)) {
     lines.push(`🏥 В больничке (здоровье ${health.health}/${HOSPITAL_EXIT_HEALTH})`);
   }
+  if (isDefending(msg.from.id)) {
+    const defendRow = db.prepare('SELECT defend_until FROM buffs WHERE user_id = ?').get(msg.from.id);
+    const minutesLeft = Math.ceil((defendRow.defend_until - Math.floor(Date.now() / 1000)) / 60);
+    lines.push(`🛡️ Защитная стойка (осталось ${minutesLeft} мин)`);
+  }
 
   const hidden = isHidden(msg.from.id);
   const hideRow = db.prepare('SELECT hidden_until, hidden_since FROM user_health WHERE user_id = ?').get(msg.from.id);
@@ -3375,6 +3380,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
+    '/defend — встать в защитную стойку на 30 мин: +25 к увороту, −40% входящего урона (только обычный урон, не нат.100/жопу морковкой); атака снимает стойку; тратит 2 энергии, кулдаун = сама стойка',
   ].join('\n');
   bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
 });
