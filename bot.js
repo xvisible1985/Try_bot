@@ -1493,6 +1493,10 @@ bot.onText(/\/me\b/, (msg) => {
   // isHidden also lazily finalizes an expired session into pvp_stats
   // before answering, so the live projection below always starts from an
   // up-to-date hidden_seconds baseline.
+  if (isHospitalized(msg.from.id)) {
+    lines.push(`🏥 В больничке (здоровье ${health.health}/${HOSPITAL_EXIT_HEALTH})`);
+  }
+
   const hidden = isHidden(msg.from.id);
   const hideRow = db.prepare('SELECT hidden_until, hidden_since FROM user_health WHERE user_id = ?').get(msg.from.id);
   if (hidden) {
@@ -1597,19 +1601,23 @@ bot.onText(/\/find\b/, (msg) => {
   // Icons instead of spelled-out status, sorted чулан-occupants first —
   // isHidden also lazily finalizes anyone whose session has actually
   // expired into pvp_stats before it's used for sorting/display.
+  const hospitalLines = [];
   const hiddenLines = [];
   const visibleLines = [];
   for (const { user_id } of fighters) {
     const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(user_id);
     const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
-    if (isHidden(user_id)) {
+    if (isHospitalized(user_id)) {
+      const row = db.prepare('SELECT health FROM user_health WHERE user_id = ?').get(user_id);
+      hospitalLines.push(`🏥 ${label} (${row.health}/${HOSPITAL_EXIT_HEALTH} ХП)`);
+    } else if (isHidden(user_id)) {
       const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(user_id);
       hiddenLines.push(`🐰 ${label} (ещё ${formatExpire(row.hidden_until)})`);
     } else {
       visibleLines.push(`⚔️ ${label}`);
     }
   }
-  const lines = ['Бойцы:', ...hiddenLines, ...visibleLines];
+  const lines = ['Бойцы:', ...hospitalLines, ...hiddenLines, ...visibleLines];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
@@ -3305,7 +3313,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/restore — выпить эликсир здоровья: +100 ХП, не выше максимума',
     '/recharge — выпить эликсир энергии: полное восстановление',
     '/give @username — передать эликсир или оружие другому воину (с его подтверждением)',
-    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — мут на 30 мин + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
+    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
