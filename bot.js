@@ -1475,9 +1475,10 @@ function checkPvpCooldown(userId, weaponKey, cooldownMs) {
   return 0;
 }
 
-// Weapon keys currently held by a given owner — 0, 1, or 2 rows (a holder
-// can end up with both over time via the knockout weapon-steal offer).
-// ownerUserId is
+// Weapons currently held by a given owner. A holder can end up with
+// several of the 6 singleton weapons over time via the knockout
+// weapon-steal offer, plus any number of knives (each an independent
+// owned_knives row — see instanceKey below). ownerUserId is
 // ignored for ownerType 'troll' (there's only ever one troll). ORDER BY
 // rowid gives a stable "acquisition order" (rowid is assigned once, at
 // each weapon's original seed INSERT, and never changes across the
@@ -1490,7 +1491,9 @@ function getWeaponsFor(ownerType, ownerUserId) {
   // ever differs for a knife, where it's "knife:<owned_knives.id>" so a
   // SPECIFIC physical knife can be identified among several this same
   // owner might hold. Regular weapons first (stable rowid order, as
-  // before), knives appended after in acquisition order.
+  // before), knives appended after in acquisition order. Knife rows also
+  // carry an expiresAt field (unix seconds) that regular-weapon rows
+  // don't — used by /me to show remaining decay time.
   if (ownerType === 'troll') {
     return db.prepare("SELECT weapon_key, weapon_key AS instanceKey FROM weapon_ownership WHERE owner_type = 'troll' ORDER BY rowid").all();
   }
@@ -1510,7 +1513,8 @@ function getWeaponsFor(ownerType, ownerUserId) {
 // number. slot 1/2/3 means the Nth real weapon the attacker currently
 // holds, in getWeaponsFor's stable acquisition order — /kick1/2/3. Falls
 // back to bare-handed if they don't hold that many. Returns
-// { key, text, multiplier } — key is null for the cosmetic fallback.
+// { key, instanceKey, text, multiplier } — key/instanceKey are null for
+// the cosmetic fallback.
 function pickWeaponForAttacker(ownerType, ownerUserId, slot, fallbackWeapons) {
   if (slot > 0) {
     const owned = getWeaponsFor(ownerType, ownerUserId);
