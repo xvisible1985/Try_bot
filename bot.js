@@ -373,7 +373,7 @@ db.exec(`
 `);
 // Energy: separate resource from health, spent 1-per-swing on /kick (and
 // troll-bot's /fight, via its own cross-process connection to this same
-// table), regenerating 1 per 20 minutes up to max_energy. Same
+// table), regenerating 1 per 10 minutes up to max_energy. Same
 // ALTER-since-table-already-existed idiom as hidden_until above.
 for (const [column, def] of [['energy', 'INTEGER NOT NULL DEFAULT 10'], ['max_energy', 'INTEGER NOT NULL DEFAULT 10'], ['last_energy_regen_at', 'INTEGER']]) {
   try {
@@ -1199,7 +1199,7 @@ const AGILITY_DODGE_PER_POINT = 0.5;      // added to the defender's opposed-rol
 const LEG_INJURY_DODGE_PENALTY = 10;      // pp off the defender's opposed-roll score, for their own leg injury
 const AGILITY_COOLDOWN_PER_POINT = 0.005; // -0.5% off the PvP cooldown per point of the ATTACKER's agility
 const ENDURANCE_REGEN_SPEEDUP_PER_POINT = 0.01; // -1% off the energy regen interval per point
-const MIN_ENERGY_REGEN_INTERVAL_SECONDS = 300;  // floor at 5 min (base is 20 min)
+const MIN_ENERGY_REGEN_INTERVAL_SECONDS = 300;  // floor at 5 min (base is 10 min)
 const XP_PER_HIT = 1;
 const XP_PER_CRIT = 5;
 const XP_PER_NAT100 = 15;
@@ -4236,11 +4236,11 @@ bot.on('callback_query', async (query) => {
 // calendar day rather than on every tick during the 04:00 hour.
 const HEALTH_REGEN_PER_HOUR = 20;
 const HEALTH_REGEN_TICK_MS = 10 * 60 * 1000;
-// Energy regens on its own fixed cadence (1 point per 20 minutes, no
+// Energy regens on its own fixed cadence (1 point per 10 minutes, no
 // proration) rather than health's per-hour rate — simpler since 1 is
 // already the smallest unit, so partial-interval gains would always be 0
 // anyway.
-const ENERGY_REGEN_INTERVAL_SECONDS = 20 * 60;
+const ENERGY_REGEN_INTERVAL_SECONDS = 10 * 60;
 
 function healthRegenTick() {
   try {
