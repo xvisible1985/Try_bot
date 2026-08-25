@@ -497,22 +497,6 @@ db.exec(`
   )
 `);
 
-// One-time: carry over a currently-actively-held knife (if any) into
-// its own owned_knives row, then retire weapon_ownership's singleton
-// knife row entirely — going forward, /pick, the shop, and every other
-// knife-touching site use owned_knives exclusively. A fumble-dropped-
-// but-unclaimed knife at migration time is intentionally NOT carried
-// over (an edge case not worth the extra complexity) — it simply
-// ceases to exist, same as if it had fully decayed.
-runOnce('2026-08-25-knife-multi-instance-migration', () => {
-  const existing = db.prepare("SELECT owner_user_id, owner_username, expires_at FROM weapon_ownership WHERE weapon_key = 'knife' AND owner_type = 'human'").get();
-  if (existing) {
-    db.prepare('INSERT INTO owned_knives (owner_user_id, owner_username, is_dropped, dropped_chat_id, acquired_at, expires_at) VALUES (?, ?, 0, NULL, ?, ?)')
-      .run(existing.owner_user_id, existing.owner_username, Math.floor(Date.now() / 1000), existing.expires_at);
-  }
-  db.exec("DELETE FROM weapon_ownership WHERE weapon_key = 'knife'");
-});
-
 // Natural-0 fumble drop (see /kick below): owner_type briefly becomes
 // 'dropped' (owner_user_id repurposed to mean "who dropped it, so they
 // can't immediately re-pick-up their own weapon" rather than "who holds
@@ -583,6 +567,22 @@ function runOnce(name, fn) {
   fn();
   db.prepare('INSERT INTO migrations_run (name, run_at) VALUES (?, ?)').run(name, Math.floor(Date.now() / 1000));
 }
+
+// One-time: carry over a currently-actively-held knife (if any) into
+// its own owned_knives row, then retire weapon_ownership's singleton
+// knife row entirely — going forward, /pick, the shop, and every other
+// knife-touching site use owned_knives exclusively. A fumble-dropped-
+// but-unclaimed knife at migration time is intentionally NOT carried
+// over (an edge case not worth the extra complexity) — it simply
+// ceases to exist, same as if it had fully decayed.
+runOnce('2026-08-25-knife-multi-instance-migration', () => {
+  const existing = db.prepare("SELECT owner_user_id, owner_username, expires_at FROM weapon_ownership WHERE weapon_key = 'knife' AND owner_type = 'human'").get();
+  if (existing) {
+    db.prepare('INSERT INTO owned_knives (owner_user_id, owner_username, is_dropped, dropped_chat_id, acquired_at, expires_at) VALUES (?, ?, 0, NULL, ?, ?)')
+      .run(existing.owner_user_id, existing.owner_username, Math.floor(Date.now() / 1000), existing.expires_at);
+  }
+  db.exec("DELETE FROM weapon_ownership WHERE weapon_key = 'knife'");
+});
 
 // Returns every real weapon to its originally-seeded owner. Weapons
 // with a seed_username (everyone except crutch) go back to NULL
