@@ -1963,6 +1963,27 @@ bot.onText(/\/recharge\b/i, (msg) => {
   ).catch(() => {});
 });
 
+// /shop — see docs/superpowers/specs/2026-08-25-shop-elixirs-design.md.
+// No warrior gate, matching /restore/recharge/inventory — a non-warrior
+// can't buy anything anyway since they can only ever have 0 coins.
+function shopCategoryKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '🧪 Эликсиры', callback_data: 'shop:elixirs' }],
+      [{ text: '🗡 Оружие (скоро)', callback_data: 'shop:soon' }],
+      [{ text: '👕 Одежда (скоро)', callback_data: 'shop:soon' }],
+    ],
+  };
+}
+bot.onText(/\/shop\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  bot.sendMessage(
+    msg.chat.id,
+    `🏪 ${actorLabel}, магазин:`,
+    threadOpts(msg, { reply_markup: shopCategoryKeyboard() })
+  ).catch(() => {});
+});
+
 // /give — transfers one elixir or currently-held weapon to another warrior,
 // with the receiver's explicit accept/decline (see
 // docs/superpowers/specs/2026-08-24-item-transfer-design.md). Two stages,
