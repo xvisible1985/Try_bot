@@ -1745,10 +1745,15 @@ bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
 // temporal-dead-zone ReferenceError if moved up there.
 runOnce('2026-08-25-warrior-wallets', () => {
   db.exec('UPDATE pvp_stats SET coins = coins + 20 WHERE is_warrior = 1');
+  // The coins grant above is a reliable local DB write; this announcement
+  // is a fire-and-forget network call at process boot, when the bot may
+  // not yet be fully up in that chat — runOnce's one-time-ever semantics
+  // mean a lost announcement can never self-heal on a later restart, so
+  // at least log a failure instead of swallowing it silently.
   bot.sendMessage(
     ARENA_CHAT_ID,
     '🪙 Всем воинам открыли кошельки — на счету у каждого сразу +20 монет! Баланс — /wallet.'
-  ).catch(() => {});
+  ).catch(err => console.error('warrior-wallets announcement failed:', err.message));
 });
 
 // /warrior — the only way to become eligible for /kick (see the
