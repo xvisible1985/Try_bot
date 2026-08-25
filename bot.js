@@ -432,6 +432,14 @@ db.exec(`
   )
 `);
 
+// Защитная стойка — /defend below. Same ALTER-after-CREATE idiom as
+// every other column added to an existing table in this project.
+for (const [column, def] of [['defend_until', 'INTEGER']]) {
+  try {
+    db.exec(`ALTER TABLE buffs ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
+
 // Real, stealable weapons (see WEAPON_DEFS below and, in the sibling
 // troll-bot repo, docs/superpowers/specs/2026-08-07-real-weapons-design.md)
 // — three rows, seeded once to their named starting owners by username. owner_user_id
@@ -1147,6 +1155,10 @@ const XP_PER_CRIT = 5;
 const XP_PER_NAT100 = 15;
 const HOSPITAL_EXIT_HEALTH = 30;      // больничка released you once health reaches this
 const HOSPITAL_REGEN_MULTIPLIER = 2;  // regen rate while hospitalized, vs. the normal HEALTH_REGEN_PER_HOUR baseline
+const DEFEND_DURATION_MS = 30 * 60 * 1000;
+const DEFEND_ENERGY_COST = 2;
+const DEFEND_DODGE_BONUS = 25;      // added to the defender's opposed-roll score, on top of everything else
+const DEFEND_DAMAGE_REDUCTION = 0.4; // incoming graduated damage ×(1 - 0.4); does NOT apply to nat-100/carrot-ass/axe-shave
 
 // 20-minute чулан lockout for anyone who actually lands a hit (see
 // /hide below) — in-memory, same idiom as hideCooldowns/pvpCooldowns,
@@ -1309,6 +1321,14 @@ function isHospitalized(userId) {
   if (row.health < HOSPITAL_EXIT_HEALTH) return true;
   db.prepare('UPDATE user_health SET hospitalized_since = NULL WHERE user_id = ?').run(userId);
   return false;
+}
+
+// Защитная стойка — pure lazy read, no clearing needed here (same idiom
+// as getHitThreshold/getCritThreshold reading their own *_until columns
+// — expiry is just a timestamp comparison, nothing to finalize).
+function isDefending(userId) {
+  const row = db.prepare('SELECT defend_until FROM buffs WHERE user_id = ?').get(userId);
+  return !!row && row.defend_until > Math.floor(Date.now() / 1000);
 }
 
 // UPDATE...RETURNING keeps the floor-then-read atomic against the regen
@@ -2289,6 +2309,31 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
   }
 
   await performKick(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, target, slot);
+});
+
+// /defend — voluntary 30-min self-buff trading offense for defense (see
+// docs/superpowers/specs/2026-08-24-hospital-and-defend-design.md).
+// Always succeeds once energy is paid (unlike the kuni buffs' 50/50 —
+// this is "assume a stance," not an attempt that can fail). Cooldown is
+// the stance's own duration, same pattern as kuniFun/kuniAlia/kuniTama.
+bot.onText(/\/defend\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const now = Math.floor(Date.now() / 1000);
+  const row = db.prepare('SELECT defend_until FROM buffs WHERE user_id = ?').get(msg.from.id);
+  if (row && row.defend_until > now) {
+    const minutesLeft = Math.ceil((row.defend_until - now) / 60);
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, стойка уже активна (ещё ${minutesLeft} мин).`, threadOpts(msg));
+  }
+  if (consumeEnergy(msg.from.id, DEFEND_ENERGY_COST) === null) {
+    const current = getUserHealth(msg.from.id).energy;
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии на стойку (нужно ${DEFEND_ENERGY_COST}, есть ${current}).`, threadOpts(msg));
+  }
+  const until = now + DEFEND_DURATION_MS / 1000;
+  db.prepare(
+    'INSERT INTO buffs (user_id, defend_until) VALUES (?, ?) ' +
+    'ON CONFLICT(user_id) DO UPDATE SET defend_until = excluded.defend_until'
+  ).run(msg.from.id, until);
+  bot.sendMessage(msg.chat.id, `🛡️ ${actorLabel} встаёт в защитную стойку на 30 мин: +${DEFEND_DODGE_BONUS} к увороту, −${Math.round(DEFEND_DAMAGE_REDUCTION * 100)}% входящего урона. Атака снимет стойку.`, threadOpts(msg)).catch(() => {});
 });
 
 // --- /kuniFun, /kuniAlia, /kuniTama: public self-buffs, no reply/target
