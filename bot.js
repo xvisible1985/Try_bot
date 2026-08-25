@@ -1484,17 +1484,24 @@ function checkPvpCooldown(userId, weaponKey, cooldownMs) {
 // UPDATEs that move ownership around) — this is what /kick1/2/3 index
 // into, and what /me numbers its weapon list by.
 function getWeaponsFor(ownerType, ownerUserId) {
-  // expires_at only ever matters for the knife (every other weapon's is
-  // always NULL) — filtering it out here, in the one shared read
-  // function, means an expired-but-not-yet-swept knife silently stops
-  // counting everywhere (/kickN slots, /me, /find, /warriors) without
-  // needing arenaTick's own cleanup to have run first.
-  return ownerType === 'troll'
-    ? db.prepare("SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'troll' ORDER BY rowid").all()
-    : db.prepare(
-        "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? " +
-        "AND (expires_at IS NULL OR expires_at > strftime('%s','now')) ORDER BY rowid"
-      ).all(ownerUserId);
+  // Returns { weapon_key, instanceKey } rows. instanceKey === weapon_key
+  // for every singleton weapon (bat/axe/scissors/crutch/horns/carrot —
+  // weapon_key is still a PK for these, unchanged behavior) — it only
+  // ever differs for a knife, where it's "knife:<owned_knives.id>" so a
+  // SPECIFIC physical knife can be identified among several this same
+  // owner might hold. Regular weapons first (stable rowid order, as
+  // before), knives appended after in acquisition order.
+  if (ownerType === 'troll') {
+    return db.prepare("SELECT weapon_key, weapon_key AS instanceKey FROM weapon_ownership WHERE owner_type = 'troll' ORDER BY rowid").all();
+  }
+  const regular = db.prepare(
+    "SELECT weapon_key, weapon_key AS instanceKey FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? " +
+    "AND (expires_at IS NULL OR expires_at > strftime('%s','now')) ORDER BY rowid"
+  ).all(ownerUserId);
+  const knives = db.prepare(
+    "SELECT id, expires_at FROM owned_knives WHERE owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now') ORDER BY id"
+  ).all(ownerUserId).map(row => ({ weapon_key: 'knife', instanceKey: `knife:${row.id}`, expiresAt: row.expires_at }));
+  return [...regular, ...knives];
 }
 
 // Picks the weapon for one swing at a specific "slot": slot 0 always
@@ -1510,10 +1517,10 @@ function pickWeaponForAttacker(ownerType, ownerUserId, slot, fallbackWeapons) {
     const row = owned[slot - 1];
     if (row) {
       const def = WEAPON_DEFS[row.weapon_key];
-      return { key: row.weapon_key, text: def.instrumental, multiplier: def.multiplier };
+      return { key: row.weapon_key, instanceKey: row.instanceKey, text: def.instrumental, multiplier: def.multiplier };
     }
   }
-  return { key: null, text: pick(fallbackWeapons), multiplier: 1 };
+  return { key: null, instanceKey: null, text: pick(fallbackWeapons), multiplier: 1 };
 }
 
 // Starts (or refreshes) a 20-minute bleed on a scissors hit — see the
