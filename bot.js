@@ -2332,26 +2332,27 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       threadOpts(msgLike)
     ).catch(() => {});
     const heldWeapons = getWeaponsFor('human', target.id);
-    if (heldWeapons.length > 0) {
-      const defs = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key]);
-      const itemsText = defs.length === 1
-        ? defs[0].accusative
-        : defs.slice(0, -1).map(d => d.accusative).join(', ') + ' и ' + defs[defs.length - 1].accusative;
-      const question = defs.length === 1 ? 'Забрать?' : 'Что забрать?';
+    const victimCoinsRow = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(target.id);
+    const victimCoins = victimCoinsRow ? victimCoinsRow.coins : 0;
+    if (heldWeapons.length > 0 || victimCoins > 0) {
+      const itemParts = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key].accusative);
+      if (victimCoins > 0) itemParts.push('кошелёк');
+      const itemsText = itemParts.length === 1
+        ? itemParts[0]
+        : itemParts.slice(0, -1).join(', ') + ' и ' + itemParts[itemParts.length - 1];
+      const question = itemParts.length === 1 ? 'Забрать?' : 'Что забрать?';
+      const buttons = heldWeapons.map(row => [{
+        text: `🗡 Забрать ${WEAPON_DEFS[row.weapon_key].accusative}`,
+        callback_data: `steal_yes:${attacker.id}:${target.id}:${row.weapon_key}`,
+      }]);
+      if (victimCoins > 0) {
+        buttons.push([{ text: '🪙 Обшарить кошель', callback_data: `steal_coins:${attacker.id}:${target.id}` }]);
+      }
+      buttons.push([{ text: '🤝 Оставить', callback_data: `steal_no:${attacker.id}` }]);
       await bot.sendMessage(
         chatId,
         `${targetLabel} в отключке — с ним ${itemsText}. ${question}`,
-        threadOpts(msgLike, {
-          reply_markup: {
-            inline_keyboard: [
-              ...heldWeapons.map(row => [{
-                text: `🗡 Забрать ${WEAPON_DEFS[row.weapon_key].accusative}`,
-                callback_data: `steal_yes:${attacker.id}:${target.id}:${row.weapon_key}`,
-              }]),
-              [{ text: '🤝 Оставить', callback_data: `steal_no:${attacker.id}` }],
-            ],
-          },
-        })
+        threadOpts(msgLike, { reply_markup: { inline_keyboard: buttons } })
       ).catch(() => {});
     }
   }
@@ -3739,6 +3740,57 @@ bot.on('callback_query', async (query) => {
     }
 
     await bot.editMessageText(`✅ ${senderLabel} передал(а) ${itemLabel(itemType)} игроку ${targetLabel}!`, editOpts).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  // Wallet-robbery option on the knockout-loot offer (see
+  // docs/superpowers/specs/2026-08-25-wallet-design.md). Coins are
+  // fungible — unlike weapon ownership, which is a unique resource a
+  // second click naturally can't re-steal — so this needs an explicit
+  // double-click guard. Reuses /give's existing resolvedGiveOffers Set
+  // rather than introducing a second near-identical one; the two
+  // features' offer messages never collide.
+  if (data.startsWith('steal_coins:')) {
+    const [, attackerIdStr, victimIdStr] = data.split(':');
+    const attackerId = Number(attackerIdStr);
+    if (query.from.id !== attackerId) {
+      return bot.answerCallbackQuery(query.id, { text: 'Это не твой трофей', show_alert: true }).catch(() => {});
+    }
+
+    const victimId = Number(victimIdStr);
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
+
+    const resolvedKey = `${chatId}:${messageId}`;
+    if (resolvedGiveOffers.has(resolvedKey)) {
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+    resolvedGiveOffers.add(resolvedKey);
+    if (resolvedGiveOffers.size > MAX_RESOLVED_GIVE_OFFERS) resolvedGiveOffers.delete(resolvedGiveOffers.values().next().value);
+
+    const row = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(victimId);
+    const currentCoins = row ? row.coins : 0;
+    if (currentCoins <= 0) {
+      await bot.editMessageText('Кошелёк уже пуст — кто-то опередил.', editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+
+    // Same 50/50 grip roll as the weapon-steal branch below — the downed
+    // victim gets one last chance to hang on to their money too.
+    if (Math.random() < 0.5) {
+      const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(victimId);
+      const victimLabel = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${victimId}`;
+      await bot.editMessageText(`🤜 ${actorLabel} пытается обшарить карманы, но ${victimLabel} вцепляется в кошелёк мёртвой хваткой — не отдаёт!`, editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+
+    const amount = Math.floor(Math.random() * currentCoins) + 1;
+    db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ?').run(amount, victimId);
+    db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(amount, query.from.id);
+    await bot.editMessageText(`🪙 ${actorLabel} обшарил(а) карманы отключившегося и стащил(а) ${amount} монет!`, editOpts).catch(() => {});
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
