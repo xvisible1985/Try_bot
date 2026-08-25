@@ -2058,7 +2058,12 @@ bot.onText(/\/shop\b/i, (msg) => {
 function itemLabel(itemType) {
   if (itemType === 'elixir:health') return '🧪❤️ эликсир здоровья';
   if (itemType === 'elixir:energy') return '🧪⚡ эликсир энергии';
-  const def = WEAPON_DEFS[itemType.slice('weapon:'.length)];
+  // itemType is "weapon:<instanceKey>" — for a knife that's
+  // "weapon:knife:17", so WEAPON_DEFS needs just the "knife" part, not
+  // the full instanceKey (which isn't a valid WEAPON_DEFS key itself).
+  const instanceKey = itemType.slice('weapon:'.length);
+  const weaponKey = instanceKey.startsWith('knife:') ? 'knife' : instanceKey;
+  const def = WEAPON_DEFS[weaponKey];
   return `${def.emoji} ${def.accusative}`;
 }
 
@@ -2118,9 +2123,9 @@ bot.onText(/\/give\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   if (stats.energy_elixirs > 0) {
     buttons.push([{ text: `🧪⚡ Эликсир энергии ×${stats.energy_elixirs}`, callback_data: `gv_i:${msg.from.id}:${target.id}:elixir:energy` }]);
   }
-  for (const { weapon_key } of weapons) {
+  for (const { weapon_key, instanceKey } of weapons) {
     const def = WEAPON_DEFS[weapon_key];
-    buttons.push([{ text: `${def.emoji} ${def.name}`, callback_data: `gv_i:${msg.from.id}:${target.id}:weapon:${weapon_key}` }]);
+    buttons.push([{ text: `${def.emoji} ${def.name}`, callback_data: `gv_i:${msg.from.id}:${target.id}:weapon:${instanceKey}` }]);
   }
 
   bot.sendMessage(
@@ -3813,12 +3818,18 @@ bot.on('callback_query', async (query) => {
       const row = db.prepare('SELECT energy_elixirs FROM pvp_stats WHERE user_id = ?').get(senderId);
       available = !!row && row.energy_elixirs > 0;
     } else {
-      const weaponKey = itemType.slice('weapon:'.length);
-      const row = db.prepare(
-        "SELECT 1 FROM weapon_ownership WHERE weapon_key = ? AND owner_type = 'human' AND owner_user_id = ? " +
-        "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
-      ).get(weaponKey, senderId);
-      available = !!row;
+      const instanceKey = itemType.slice('weapon:'.length);
+      if (instanceKey.startsWith('knife:')) {
+        const knifeId = Number(instanceKey.slice('knife:'.length));
+        const row = db.prepare("SELECT 1 FROM owned_knives WHERE id = ? AND owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now')").get(knifeId, senderId);
+        available = !!row;
+      } else {
+        const row = db.prepare(
+          "SELECT 1 FROM weapon_ownership WHERE weapon_key = ? AND owner_type = 'human' AND owner_user_id = ? " +
+          "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
+        ).get(instanceKey, senderId);
+        available = !!row;
+      }
     }
     if (!available) {
       await bot.editMessageText('Этого у тебя уже нет.', editOpts).catch(() => {});
@@ -3902,13 +3913,21 @@ bot.on('callback_query', async (query) => {
         transferred = true;
       }
     } else {
-      const weaponKey = itemType.slice('weapon:'.length);
-      const result = db.prepare(
-        "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? " +
-        "WHERE weapon_key = ? AND owner_type = 'human' AND owner_user_id = ? " +
-        "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
-      ).run(targetId, query.from.username, weaponKey, senderId);
-      transferred = result.changes > 0;
+      const instanceKey = itemType.slice('weapon:'.length);
+      if (instanceKey.startsWith('knife:')) {
+        const knifeId = Number(instanceKey.slice('knife:'.length));
+        const result = db.prepare(
+          "UPDATE owned_knives SET owner_user_id = ?, owner_username = ? WHERE id = ? AND owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now')"
+        ).run(targetId, query.from.username, knifeId, senderId);
+        transferred = result.changes > 0;
+      } else {
+        const result = db.prepare(
+          "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? " +
+          "WHERE weapon_key = ? AND owner_type = 'human' AND owner_user_id = ? " +
+          "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
+        ).run(targetId, query.from.username, instanceKey, senderId);
+        transferred = result.changes > 0;
+      }
     }
 
     if (!transferred) {
