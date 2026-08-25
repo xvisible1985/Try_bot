@@ -2286,9 +2286,14 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     // Losing the opposed roll (dodgedByDefender) has nothing to drop —
     // only a genuine natural-0 fumble does.
     if (roll === 0 && weapon.key) {
-      db.prepare(
-        "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
-      ).run(attacker.id, chatId, weapon.key);
+      if (weapon.instanceKey.startsWith('knife:')) {
+        const knifeId = Number(weapon.instanceKey.slice('knife:'.length));
+        db.prepare('UPDATE owned_knives SET owner_user_id = ?, owner_username = NULL, is_dropped = 1, dropped_chat_id = ? WHERE id = ?').run(attacker.id, chatId, knifeId);
+      } else {
+        db.prepare(
+          "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
+        ).run(attacker.id, chatId, weapon.key);
+      }
       await bot.sendMessage(
         chatId,
         `😱 ${actorLabel} так мажет, что ${WEAPON_DEFS[weapon.key].name} вылетает из рук! Кто первым напишет что-нибудь в чат — подберёт.`,
@@ -3199,6 +3204,19 @@ bot.on('message', async (msg) => {
     ).run(msg.from.id, msg.from.username, row.weapon_key, msg.chat.id);
     if (changed.changes > 0) {
       const def = WEAPON_DEFS[row.weapon_key];
+      const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+      bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
+    }
+  }
+  const droppedKnivesHere = db.prepare(
+    'SELECT id FROM owned_knives WHERE is_dropped = 1 AND dropped_chat_id = ? AND owner_user_id != ?'
+  ).all(msg.chat.id, msg.from.id);
+  for (const row of droppedKnivesHere) {
+    const changed = db.prepare(
+      'UPDATE owned_knives SET owner_user_id = ?, owner_username = ?, is_dropped = 0, dropped_chat_id = NULL WHERE id = ? AND is_dropped = 1 AND dropped_chat_id = ?'
+    ).run(msg.from.id, msg.from.username, row.id, msg.chat.id);
+    if (changed.changes > 0) {
+      const def = WEAPON_DEFS.knife;
       const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
       bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
     }
