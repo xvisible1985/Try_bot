@@ -1586,6 +1586,7 @@ const HIDE_COOLDOWN_MS = 20 * 60 * 1000;
 const HIDE_CLOSET_SIZE = 5;
 
 bot.onText(/\/me\b/, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const health = getUserHealth(msg.from.id);
   const lines = [
     `❤️ Твоё здоровье: ${health.health}/${health.max_health}`,
@@ -1665,6 +1666,7 @@ bot.onText(/\/me\b/, (msg) => {
 });
 
 bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const hours = match[1] ? parseInt(match[1], 10) : 1;
   if (hours < 1) {
@@ -1727,6 +1729,7 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
 // hit /kick or /hide at least once), by known_users' cached display
 // name, with their current hidden status — чулан occupants listed first.
 bot.onText(/\/find\b/, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   // Only warriors — user_health also picks up non-warrior/troll-bot
   // activity (that table is shared cross-process), which isn't a
   // meaningful "where is this fighter" answer for /kick's own roster.
@@ -1795,6 +1798,7 @@ function levelupKeyboard() {
 }
 
 bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const arg = match[1] ? match[1].toLowerCase() : null;
   const stats = getStats(msg.from.id);
@@ -1878,6 +1882,7 @@ bot.onText(/\/pvpon\b/i, async (msg) => {
 // than any new interactive UI — the person then spends them the same
 // way as any other banked points, via /levelup, same as everyone else.
 bot.onText(/\/warrior\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   if (isWarrior(msg.from.id)) {
     bot.sendMessage(msg.chat.id, `${actorLabel}, ты уже воин.`, threadOpts(msg)).catch(() => {});
