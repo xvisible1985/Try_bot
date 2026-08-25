@@ -325,6 +325,16 @@ for (const [column, def] of [['health_elixirs', 'INTEGER NOT NULL DEFAULT 0'], [
   } catch {}
 }
 
+// Warrior wallets — see docs/superpowers/specs/2026-08-25-wallet-design.md.
+// No spending mechanic exists yet; this is purely a balance, gained via
+// /warrior registration and knockout-loot robbery. Same ALTER idiom as
+// the elixir columns above.
+for (const [column, def] of [['coins', 'INTEGER NOT NULL DEFAULT 0']]) {
+  try {
+    db.exec(`ALTER TABLE pvp_stats ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
+
 // Arena crate drops (see arenaTick, /pick, /restore, and /recharge
 // further below).
 // current_batch_id increments on every drop; arena_crates.batch_id ties
@@ -1726,6 +1736,21 @@ bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
   ).catch(() => {});
 });
 
+// One-time: everyone who was already a warrior before this deploy gets
+// the same +20 coins new registrations now grant via /warrior below.
+// Placed here (not with the other runOnce migrations near the top of
+// the file) specifically because it references ARENA_CHAT_ID, which
+// isn't declared yet at that earlier point in the script — runOnce
+// calls its callback synchronously, immediately, so this would throw a
+// temporal-dead-zone ReferenceError if moved up there.
+runOnce('2026-08-25-warrior-wallets', () => {
+  db.exec('UPDATE pvp_stats SET coins = coins + 20 WHERE is_warrior = 1');
+  bot.sendMessage(
+    ARENA_CHAT_ID,
+    '🪙 Всем воинам открыли кошельки — на счету у каждого сразу +20 монет! Баланс — /wallet.'
+  ).catch(() => {});
+});
+
 // /warrior — the only way to become eligible for /kick (see the
 // isWarrior gate in performKick below), one-time per person. Grants
 // 300 XP (3 points under the existing floor(xp/100) formula) rather
@@ -1738,10 +1763,10 @@ bot.onText(/\/warrior\b/i, (msg) => {
     return;
   }
   ensureStatsRow(msg.from.id);
-  db.prepare('UPDATE pvp_stats SET is_warrior = 1, xp = xp + 300 WHERE user_id = ?').run(msg.from.id);
+  db.prepare('UPDATE pvp_stats SET is_warrior = 1, xp = xp + 300, coins = coins + 20 WHERE user_id = ?').run(msg.from.id);
   bot.sendMessage(
     msg.chat.id,
-    `⚔️ ${actorLabel} теперь воин! Начислено 300 опыта (3 очка) — вложи их: /levelup точность|сила|ловкость|выносливость (можно все 3 раза в одну характеристику или по-разному).`,
+    `⚔️ ${actorLabel} теперь воин! Начислено 300 опыта (3 очка) — вложи их: /levelup точность|сила|ловкость|выносливость (можно все 3 раза в одну характеристику или по-разному). Также +20 монет в кошелёк — баланс: /wallet.`,
     threadOpts(msg)
   ).catch(() => {});
 });
