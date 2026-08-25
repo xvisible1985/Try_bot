@@ -1165,6 +1165,7 @@ const XP_PER_CRIT = 5;
 const XP_PER_NAT100 = 15;
 const HOSPITAL_EXIT_HEALTH = 30;      // больничка releases you once health reaches this
 const HOSPITAL_REGEN_MULTIPLIER = 2;  // regen rate while hospitalized, vs. the normal HEALTH_REGEN_PER_HOUR baseline
+const HOSPITAL_MIN_DISCHARGE_HEALTH = 5; // minimum health to leave больничка early by attacking
 const DEFEND_DURATION_MS = 30 * 60 * 1000;
 const DEFEND_ENERGY_COST = 2;
 const DEFEND_DODGE_BONUS = 25;      // added to the defender's opposed-roll score, on top of everything else
@@ -1341,6 +1342,27 @@ function isDefending(userId) {
   return !!row && row.defend_until > Math.floor(Date.now() / 1000);
 }
 
+// Whether an attacker is still within their post-knockout mute (see
+// damageHuman's muteUser(..., 'драка', 30 min) call below — only
+// reached when больничка couldn't be paid for, see
+// docs/superpowers/specs/2026-08-25-paid-hospital-design.md). /kick
+// used to gate on health === 0 directly, but healthRegenTick's hourly
+// trickle can bring health back above 0 within as little as 10 minutes
+// — well before the intended 30-minute "в отключке" window ends —
+// which let a just-regenerated attacker swing again with no warning.
+// Checking the mute row (by reason, not by admin mutes in general) is
+// the actual source of truth for "still down from a fight" regardless
+// of how far health has already regenerated.
+function isKnockedOut(userId) {
+  const row = db.prepare('SELECT muted_by_name, expires_at FROM mutes WHERE user_id = ?').get(userId);
+  if (!row || row.muted_by_name !== 'драка') return false;
+  if (row.expires_at && row.expires_at * 1000 < Date.now()) {
+    db.prepare('DELETE FROM mutes WHERE user_id = ?').run(userId);
+    return false;
+  }
+  return true;
+}
+
 // UPDATE...RETURNING keeps the floor-then-read atomic against the regen
 // tick's own concurrent writes (see healthRegenTick below). Also stamps
 // last_regen_at = now: healthRegenTick only updates that column while
@@ -1355,10 +1377,20 @@ function damageHuman(userId, chatId, username, damage) {
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('UPDATE user_health SET health = MAX(0, health - ?), last_regen_at = ? WHERE user_id = ? RETURNING health').get(damage, now, userId);
   if (row.health === 0) {
-    // COALESCE: re-flooring an already-hospitalized player to 0 again
-    // (e.g. a second hit landing before they've regenerated at all)
-    // must not reset their entry timestamp.
-    db.prepare('UPDATE user_health SET hospitalized_since = COALESCE(hospitalized_since, ?) WHERE user_id = ?').run(now, userId);
+    // Больничка costs 1 coin to enter — can't pay, don't get admitted.
+    // No coins means the guarded UPDATE below matches 0 rows (paid is
+    // falsy), same as a missing pvp_stats row entirely (shouldn't
+    // happen in practice — reaching 0 HP always implies a warrior, who
+    // always has a row — but handled safely regardless).
+    const paid = db.prepare('UPDATE pvp_stats SET coins = coins - 1 WHERE user_id = ? AND coins >= 1 RETURNING coins').get(userId);
+    if (paid) {
+      // COALESCE: re-flooring an already-hospitalized player to 0 again
+      // (e.g. a second hit landing before they've regenerated at all)
+      // must not reset their entry timestamp.
+      db.prepare('UPDATE user_health SET hospitalized_since = COALESCE(hospitalized_since, ?) WHERE user_id = ?').run(now, userId);
+    } else {
+      muteUser(userId, chatId, username, 0, 'драка', 30 * 60 * 1000);
+    }
   }
   return row.health;
 }
