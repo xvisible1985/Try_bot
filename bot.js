@@ -2022,7 +2022,7 @@ function shopCategoryKeyboard() {
   return {
     inline_keyboard: [
       [{ text: '🧪 Эликсиры', callback_data: 'shop:elixirs' }],
-      [{ text: '🗡 Оружие (скоро)', callback_data: 'shop:soon' }],
+      [{ text: '🗡 Оружие', callback_data: 'shop:weapons' }],
       [{ text: '👕 Одежда (скоро)', callback_data: 'shop:soon' }],
     ],
   };
@@ -2037,6 +2037,19 @@ function elixirShopKeyboard() {
     inline_keyboard: [
       [{ text: '🧪❤️ Купить (5)', callback_data: 'shop:buy:health' }, { text: '🧪⚡ Купить (5)', callback_data: 'shop:buy:energy' }],
       [{ text: '🧪❤️ Продать (3)', callback_data: 'shop:sell:health' }, { text: '🧪⚡ Продать (3)', callback_data: 'shop:sell:energy' }],
+      [{ text: '⬅️ Назад', callback_data: 'shop:back' }],
+    ],
+  };
+}
+function weaponShopText(actorLabel, coins, knifeCount) {
+  return `🗡 ${actorLabel}, магазин оружия. Баланс: ${coins} монет. У тебя ножей: ${knifeCount}.\n` +
+    `Купить ржавый нож — 5 монет\n` +
+    `Продать ржавый нож — 3 монеты`;
+}
+function weaponShopKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '🔪 Купить (5)', callback_data: 'shop:buy:knife' }, { text: '🔪 Продать (3)', callback_data: 'shop:sell:knife' }],
       [{ text: '⬅️ Назад', callback_data: 'shop:back' }],
     ],
   };
@@ -4039,6 +4052,20 @@ bot.on('callback_query', async (query) => {
     }).catch(() => {});
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
+  if (data === 'shop:weapons') {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+    ensureStatsRow(query.from.id);
+    const coinsRow = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(query.from.id);
+    const knifeCount = db.prepare("SELECT COUNT(*) AS n FROM owned_knives WHERE owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now')").get(query.from.id).n;
+    await bot.editMessageText(weaponShopText(actorLabel, coinsRow.coins, knifeCount), {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: weaponShopKeyboard(),
+    }).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
   if (data.startsWith('shop:buy:') || data.startsWith('shop:sell:')) {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
@@ -4059,6 +4086,20 @@ bot.on('callback_query', async (query) => {
     } else if (data === 'shop:sell:energy') {
       ok = !!db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs - 1 WHERE user_id = ? AND energy_elixirs >= 1 RETURNING energy_elixirs').get(userId);
       if (ok) db.prepare('UPDATE pvp_stats SET coins = coins + 3 WHERE user_id = ?').run(userId);
+    } else if (data === 'shop:buy:knife') {
+      ok = !!db.prepare('UPDATE pvp_stats SET coins = coins - 5 WHERE user_id = ? AND coins >= 5 RETURNING coins').get(userId);
+      if (ok) {
+        const now = Math.floor(Date.now() / 1000);
+        db.prepare('INSERT INTO owned_knives (owner_user_id, owner_username, is_dropped, dropped_chat_id, acquired_at, expires_at) VALUES (?, ?, 0, NULL, ?, ?)')
+          .run(userId, query.from.username, now, now + 3 * 3600);
+      }
+    } else if (data === 'shop:sell:knife') {
+      const oldest = db.prepare("SELECT id FROM owned_knives WHERE owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now') ORDER BY id LIMIT 1").get(userId);
+      ok = !!oldest;
+      if (ok) {
+        db.prepare('DELETE FROM owned_knives WHERE id = ?').run(oldest.id);
+        db.prepare('UPDATE pvp_stats SET coins = coins + 3 WHERE user_id = ?').run(userId);
+      }
     }
 
     if (!ok) {
@@ -4066,12 +4107,23 @@ bot.on('callback_query', async (query) => {
       return bot.answerCallbackQuery(query.id, { text: failText, show_alert: true }).catch(() => {});
     }
 
-    const stats = db.prepare('SELECT coins, health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(userId);
-    await bot.editMessageText(elixirShopText(actorLabel, stats), {
-      chat_id: chatId,
-      message_id: messageId,
-      reply_markup: elixirShopKeyboard(),
-    }).catch(() => {});
+    const isWeaponAction = data === 'shop:buy:knife' || data === 'shop:sell:knife';
+    if (isWeaponAction) {
+      const coinsRow = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(userId);
+      const knifeCount = db.prepare("SELECT COUNT(*) AS n FROM owned_knives WHERE owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now')").get(userId).n;
+      await bot.editMessageText(weaponShopText(actorLabel, coinsRow.coins, knifeCount), {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: weaponShopKeyboard(),
+      }).catch(() => {});
+    } else {
+      const stats = db.prepare('SELECT coins, health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(userId);
+      await bot.editMessageText(elixirShopText(actorLabel, stats), {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: elixirShopKeyboard(),
+      }).catch(() => {});
+    }
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
