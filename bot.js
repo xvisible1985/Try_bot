@@ -2505,7 +2505,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       const question = itemParts.length === 1 ? 'Забрать?' : 'Что забрать?';
       const buttons = heldWeapons.map(row => [{
         text: `🗡 Забрать ${WEAPON_DEFS[row.weapon_key].accusative}`,
-        callback_data: `steal_yes:${attacker.id}:${target.id}:${row.weapon_key}`,
+        callback_data: `steal_yes:${attacker.id}:${target.id}:${row.instanceKey}`,
       }]);
       if (victimCoins > 0) {
         buttons.push([{ text: '🪙 Обшарить кошель', callback_data: `steal_coins:${attacker.id}:${target.id}` }]);
@@ -4055,7 +4055,12 @@ bot.on('callback_query', async (query) => {
 
   if (!data.startsWith('steal_yes:') && !data.startsWith('steal_no:')) return;
 
-  const [action, attackerIdStr, victimIdStr, weaponKey] = data.split(':');
+  // instanceKey may itself contain a colon ("knife:17") — reconstruct it
+  // from every part after the first three, same colon-safe idiom /give
+  // already uses for its own itemType, rather than a naive fixed-count
+  // positional destructure that would truncate a knife's id.
+  const [action, attackerIdStr, victimIdStr, ...instanceKeyParts] = data.split(':');
+  const instanceKey = instanceKeyParts.join(':');
   const attackerId = Number(attackerIdStr);
   if (query.from.id !== attackerId) {
     return bot.answerCallbackQuery(query.id, { text: 'Это не твой трофей', show_alert: true }).catch(() => {});
@@ -4085,25 +4090,35 @@ bot.on('callback_query', async (query) => {
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
-  // weaponKey pins down exactly which button was pressed — re-verify live
-  // that it's still on the victim (not moved by a crit-steal or a
-  // different button click in the meantime) rather than trusting the
-  // snapshot the offer was built from.
-  const victimId = Number(victimIdStr);
-  // Same expiry filter as getWeaponsFor — without it, a knife that
-  // expired in the gap between the offer being posted and this click
+  // instanceKey pins down exactly which button was pressed — re-verify
+  // live that it's still on the victim (not moved by a different button
+  // click in the meantime) rather than trusting the offer's snapshot.
+  // Same expiry filter as getWeaponsFor — without it, an expired knife
   // could still be "stolen" here despite already being invisible
   // everywhere else (getWeaponsFor, /me, /find, /warriors).
-  const row = db.prepare(
-    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? AND weapon_key = ? " +
-    "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
-  ).get(victimId, weaponKey);
-  if (!row) {
-    await bot.editMessageText('Этого оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
-    return bot.answerCallbackQuery(query.id).catch(() => {});
+  const victimId = Number(victimIdStr);
+  let weaponKey;
+  if (instanceKey.startsWith('knife:')) {
+    const knifeId = Number(instanceKey.slice('knife:'.length));
+    const knifeRow = db.prepare("SELECT id FROM owned_knives WHERE id = ? AND owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now')").get(knifeId, victimId);
+    if (!knifeRow) {
+      await bot.editMessageText('Этого оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+    weaponKey = 'knife';
+  } else {
+    const row = db.prepare(
+      "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'human' AND owner_user_id = ? AND weapon_key = ? " +
+      "AND (expires_at IS NULL OR expires_at > strftime('%s','now'))"
+    ).get(victimId, instanceKey);
+    if (!row) {
+      await bot.editMessageText('Этого оружия там уже нет — кто-то опередил.', editOpts).catch(() => {});
+      return bot.answerCallbackQuery(query.id).catch(() => {});
+    }
+    weaponKey = row.weapon_key;
   }
 
-  const def = WEAPON_DEFS[row.weapon_key];
+  const def = WEAPON_DEFS[weaponKey];
   const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
 
   // 50/50 grip roll — even with the weapon confirmed still on the
@@ -4116,9 +4131,14 @@ bot.on('callback_query', async (query) => {
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
-  db.prepare(
-    "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?"
-  ).run(query.from.id, query.from.username, row.weapon_key);
+  if (instanceKey.startsWith('knife:')) {
+    const knifeId = Number(instanceKey.slice('knife:'.length));
+    db.prepare('UPDATE owned_knives SET owner_user_id = ?, owner_username = ? WHERE id = ?').run(query.from.id, query.from.username, knifeId);
+  } else {
+    db.prepare(
+      "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ? WHERE weapon_key = ?"
+    ).run(query.from.id, query.from.username, weaponKey);
+  }
   await bot.editMessageText(`${def.emoji} ${actorLabel} обыскал(а) отключившегося и забрал(а) ${def.accusative}!`, editOpts).catch(() => {});
   bot.answerCallbackQuery(query.id).catch(() => {});
 });
