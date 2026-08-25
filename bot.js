@@ -424,6 +424,14 @@ db.exec(`
 `);
 db.prepare('INSERT OR IGNORE INTO health_regen_state (id, last_full_restore_date) VALUES (1, NULL)').run();
 
+// Daily warrior coin payout — see
+// docs/superpowers/specs/2026-08-25-daily-payout-design.md. Same
+// singleton-row idiom as last_full_restore_date above, just a second
+// independent date guard on the same row.
+for (const [column, def] of [['last_daily_payout_date', 'TEXT']]) {
+  try { db.exec(`ALTER TABLE health_regen_state ADD COLUMN ${column} ${def}`); } catch {}
+}
+
 // /kuniFun/kuniAlia/kuniTama self-buffs (see docs/superpowers/specs/
 // 2026-08-16-kuni-buffs-design.md). Two independent slots — crit (written
 // by kuniFun or kuniTama) and dodge (written by kuniAlia or kuniTama) —
@@ -4000,11 +4008,16 @@ function healthRegenTick() {
     }
 
     const today = new Date().toISOString().slice(0, 10);
-    const regenState = db.prepare('SELECT last_full_restore_date FROM health_regen_state WHERE id = 1').get();
+    const regenState = db.prepare('SELECT last_full_restore_date, last_daily_payout_date FROM health_regen_state WHERE id = 1').get();
     const hour = new Date().getHours();
     if (hour === 4 && regenState.last_full_restore_date !== today) {
       db.prepare('UPDATE user_health SET health = max_health, last_regen_at = ?, hospitalized_since = NULL WHERE health < max_health').run(now);
       db.prepare('UPDATE health_regen_state SET last_full_restore_date = ? WHERE id = 1').run(today);
+    }
+    if (hour === 8 && regenState.last_daily_payout_date !== today) {
+      db.exec('UPDATE pvp_stats SET coins = coins + 10 WHERE is_warrior = 1');
+      db.prepare('UPDATE health_regen_state SET last_daily_payout_date = ? WHERE id = 1').run(today);
+      bot.sendMessage(ARENA_CHAT_ID, '💰 Всем воинам начислено +10 монет за день!').catch(err => console.error('daily payout announcement failed:', err.message));
     }
   } catch (err) {
     console.error('healthRegenTick failed:', err.message);
