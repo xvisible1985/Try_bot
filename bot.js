@@ -1776,6 +1776,16 @@ bot.onText(/\/warrior\b/i, (msg) => {
   ).catch(() => {});
 });
 
+// /wallet — self-only balance check, deliberately not part of /me (see
+// spec). A null row (someone who's never touched pvp_stats) just reads
+// as 0 — nothing is written here, so no ensureStatsRow call is needed.
+bot.onText(/\/wallet\b/i, (msg) => {
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const row = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(msg.from.id);
+  const coins = row ? row.coins : 0;
+  bot.sendMessage(msg.chat.id, `🪙 ${actorLabel}, у тебя в кошельке: ${coins} монет.`, threadOpts(msg)).catch(() => {});
+});
+
 // /warriors — roster of everyone who's registered via /warrior, sorted
 // by xp (highest first — the same value level is derived from). Each
 // line: display name, health, held real weapon(s) by emoji (blank if
