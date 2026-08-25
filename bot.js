@@ -562,6 +562,16 @@ function runOnce(name, fn) {
   db.prepare('INSERT INTO migrations_run (name, run_at) VALUES (?, ?)').run(name, Math.floor(Date.now() / 1000));
 }
 
+// Generic key-value settings store — not tied to any one feature, so
+// future on/off-style flags can reuse this instead of another ALTER +
+// migration. Currently holds only 'pvp_paused' (see /pvpon, /pvpoff,
+// and isPvpPaused below).
+db.exec('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)');
+function isPvpPaused() {
+  const row = db.prepare("SELECT value FROM bot_settings WHERE key = 'pvp_paused'").get();
+  return !!row && row.value === '1';
+}
+
 // One-time: carry over a currently-actively-held knife (if any) into
 // its own owned_knives row, then retire weapon_ownership's singleton
 // knife row entirely — going forward, /pick, the shop, and every other
@@ -1843,6 +1853,23 @@ runOnce('2026-08-25-warrior-wallets', () => {
     ARENA_CHAT_ID,
     '🪙 Всем воинам открыли кошельки — на счету у каждого сразу +20 монет! Баланс — /wallet.'
   ).catch(err => console.error('warrior-wallets announcement failed:', err.message));
+});
+
+// /pvpon, /pvpoff — admin-only global kill switch for the entire PvP
+// subsystem (see docs/superpowers/specs/2026-08-25-pvp-pause-design.md).
+// Not named /start or /stop: /start already exists (see near the top of
+// this file) as the standard bot-greeting command, matched by an
+// unanchored regex that would also catch "/startpvp" as a substring.
+bot.onText(/\/pvpoff\b/i, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('pvp_paused', '1')").run();
+  bot.sendMessage(msg.chat.id, '⛔ PvP-бои приостановлены.', threadOpts(msg)).catch(() => {});
+});
+
+bot.onText(/\/pvpon\b/i, async (msg) => {
+  if (!await isAdmin(msg)) return;
+  db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('pvp_paused', '0')").run();
+  bot.sendMessage(msg.chat.id, '✅ PvP-бои снова разрешены.', threadOpts(msg)).catch(() => {});
 });
 
 // /warrior — the only way to become eligible for /kick (see the
