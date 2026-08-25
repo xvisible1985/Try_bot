@@ -1813,7 +1813,11 @@ bot.onText(/\/restore\b/i, (msg) => {
   }
   const health = getUserHealth(msg.from.id);
   const after = Math.min(health.max_health, health.health + 100);
-  db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(after, msg.from.id);
+  if (after >= HOSPITAL_EXIT_HEALTH) {
+    db.prepare('UPDATE user_health SET health = ?, hospitalized_since = NULL WHERE user_id = ?').run(after, msg.from.id);
+  } else {
+    db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(after, msg.from.id);
+  }
   bot.sendMessage(
     msg.chat.id,
     `🧪❤️ ${actorLabel} выпил эликсир здоровья: ${health.health} -> ${after} ХП. Осталось: ${spent.health_elixirs}.`,
@@ -3661,9 +3665,13 @@ bot.on('callback_query', async (query) => {
 // Health regen — this bot's first background timer (no existing setInterval
 // to mirror; troll-bot's own backgroundTick is the loose stylistic
 // reference: one self-contained function, called on a fixed interval).
-// Runs every 10 minutes: (1) hourly +10 trickle, prorated by elapsed time
-// and capped at max_health, for anyone below it; (2) once daily at 04:00
-// server time, a full restore to max_health for everyone, guarded by
+// Runs every 10 minutes: (1) hourly HEALTH_REGEN_PER_HOUR trickle, doubled
+// while hospitalized (see больничка docs), prorated by elapsed time and
+// capped at max_health, for anyone below it — hospitalized_since is
+// cleared in the same write the instant regenerated health crosses
+// HOSPITAL_EXIT_HEALTH, so it can never go stale via this path; (2) once
+// daily at 04:00 server time, a full restore to max_health for everyone
+// (also clearing hospitalized_since, for the same reason), guarded by
 // health_regen_state.last_full_restore_date so it only fires once per
 // calendar day rather than on every tick during the 04:00 hour.
 const HEALTH_REGEN_PER_HOUR = 20;
@@ -3714,7 +3722,7 @@ function healthRegenTick() {
     const regenState = db.prepare('SELECT last_full_restore_date FROM health_regen_state WHERE id = 1').get();
     const hour = new Date().getHours();
     if (hour === 4 && regenState.last_full_restore_date !== today) {
-      db.prepare('UPDATE user_health SET health = max_health, last_regen_at = ? WHERE health < max_health').run(now);
+      db.prepare('UPDATE user_health SET health = max_health, last_regen_at = ?, hospitalized_since = NULL WHERE health < max_health').run(now);
       db.prepare('UPDATE health_regen_state SET last_full_restore_date = ? WHERE id = 1').run(today);
     }
   } catch (err) {
