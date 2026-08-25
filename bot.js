@@ -523,12 +523,6 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 // owner_user_id is populated immediately and seed_username stays NULL.
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
-// Unlike every weapon above, the knife starts owned by nobody at all —
-// owner_type = 'none' matches neither 'human' nor 'troll' nor 'dropped'
-// in any existing filter, so it's invisible everywhere until /pick
-// hands it to someone for the first time.
-db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('knife', NULL, 'none', NULL, NULL)").run();
-
 // One-time (per boot, but INSERT OR IGNORE so it never overwrites a
 // known_users row already populated live from a real message — see the
 // main message handler) backfill for /find: known_users only starts
@@ -3637,7 +3631,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/pick — забрать ящик из последней волны, упавшей на арену (раз в 3 часа, кроме 00:00-08:00; 5 ящиков: 2 эликсира здоровья, 2 эликсира энергии, ржавый нож ×1.5 урона на 3 часа; только в чате «Поединки», только воинам, 1 ящик в одни руки за волну)',
     '/inventory — сколько накоплено эликсиров (см. /pick)',
     '/wallet — узнать свой баланс монет',
-    '/shop — магазин: эликсиры за монеты (купить 5 монет, продать за 3); оружие и одежда скоро',
+    '/shop — магазин: эликсиры и ржавый нож (купить 5 монет, продать за 3); одежда скоро',
     '/restore — выпить эликсир здоровья: +100 ХП, не выше максимума',
     '/recharge — выпить эликсир энергии: полное восстановление',
     '/give @username — передать эликсир или оружие другому воину (с его подтверждением)',
