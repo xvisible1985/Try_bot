@@ -1153,7 +1153,7 @@ const MIN_ENERGY_REGEN_INTERVAL_SECONDS = 300;  // floor at 5 min (base is 20 mi
 const XP_PER_HIT = 1;
 const XP_PER_CRIT = 5;
 const XP_PER_NAT100 = 15;
-const HOSPITAL_EXIT_HEALTH = 30;      // больничка released you once health reaches this
+const HOSPITAL_EXIT_HEALTH = 30;      // больничка releases you once health reaches this
 const HOSPITAL_REGEN_MULTIPLIER = 2;  // regen rate while hospitalized, vs. the normal HEALTH_REGEN_PER_HOUR baseline
 const DEFEND_DURATION_MS = 30 * 60 * 1000;
 const DEFEND_ENERGY_COST = 2;
@@ -2152,12 +2152,26 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     } else if (hole === 'mouth') {
       targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
       const healed = targetHealthAfter - targetHealthBefore.health;
-      db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      // Defense-in-depth: больничка already refuses to let a hospitalized
+      // player be targeted at all (see isHospitalized(target.id) earlier
+      // in this function), so this heal should never actually reach a
+      // hospitalized target — but clear the flag here too if it somehow
+      // does, same as /restore and the 4am full-restore, so
+      // hospitalized_since can never go stale via this path either.
+      if (targetHealthAfter >= HOSPITAL_EXIT_HEALTH) {
+        db.prepare('UPDATE user_health SET health = ?, hospitalized_since = NULL WHERE user_id = ?').run(targetHealthAfter, target.id);
+      } else {
+        db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      }
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! ${targetLabel} с хрустом её сгрызает и получает +${healed} здоровья (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'dick') {
       targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
       const healed = targetHealthAfter - targetHealthBefore.health;
-      db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      if (targetHealthAfter >= HOSPITAL_EXIT_HEALTH) {
+        db.prepare('UPDATE user_health SET health = ?, hospitalized_since = NULL WHERE user_id = ?').run(targetHealthAfter, target.id);
+      } else {
+        db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
+      }
       await bot.sendMessage(chatId, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает +${healed} здоровья и оргазм (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
     } else {
       // Extra 50/50 roll on top of the general dodge from earlier in
@@ -2990,7 +3004,11 @@ bot.on('message', async (msg) => {
     const row = db.prepare('SELECT expires_at, muted_by_name FROM mutes WHERE user_id = ?').get(msg.from.id);
     // Knocked out by "Драка" (0 health) gets its own flavor line instead of
     // the normal admin-mute message — same underlying mute mechanism either
-    // way, see muteUser/isMuted above.
+    // way, see muteUser/isMuted above. tg-bot's own /kick no longer ever
+    // writes this mute (больничка replaced it, see hospitalized_since) —
+    // this branch is now only ever reached via a troll-bot-caused
+    // knockout, which still writes a 'драка' mute of its own into this
+    // same shared table.
     if (row && row.muted_by_name === 'драка') {
       bot.sendMessage(msg.chat.id, `😵 ${msg.from.first_name} находится в отключке...`, threadOpts(msg)).catch(() => {});
       return;
@@ -3375,7 +3393,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/give @username — передать эликсир или оружие другому воину (с его подтверждением)',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 2-24 часа (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
-    '/find — список всех бойцов: 🐰 сначала те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
+    '/find — список всех бойцов: 🏥 сначала те, кто в больничке, затем 🐰 те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
