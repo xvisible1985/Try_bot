@@ -4265,9 +4265,11 @@ function arenaTick() {
     // already had (it only ever checked owner_type = 'human'), carried
     // over unchanged rather than "fixed" as part of this refactor.
     const expiredKnives = db.prepare("SELECT id, owner_user_id FROM owned_knives WHERE is_dropped = 0 AND expires_at < ?").all(now);
+    const deleteKnife = db.prepare('DELETE FROM owned_knives WHERE id = ?');
+    const getKnownUser = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?');
     for (const knifeRow of expiredKnives) {
-      db.prepare('DELETE FROM owned_knives WHERE id = ?').run(knifeRow.id);
-      const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(knifeRow.owner_user_id);
+      deleteKnife.run(knifeRow.id);
+      const known = getKnownUser.get(knifeRow.owner_user_id);
       const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${knifeRow.owner_user_id}`;
       bot.sendMessage(ARENA_CHAT_ID, `🔪💨 Ржавый нож у ${label} рассыпался от старости!`).catch(() => {});
     }
