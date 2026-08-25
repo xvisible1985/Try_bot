@@ -1606,7 +1606,9 @@ bot.onText(/\/me\b/, (msg) => {
   heldWeapons.forEach((row, i) => {
     const def = WEAPON_DEFS[row.weapon_key];
     const slotTag = `/kick${i + 1}`;
-    if (row.weapon_key === 'carrot') {
+    if (row.weapon_key === 'knife') {
+      lines.push(`${def.emoji} ${slotTag} — ${def.name}: урон ×${def.multiplier} (осталось ${formatExpire(row.expiresAt)})`);
+    } else if (row.weapon_key === 'carrot') {
       lines.push(`${def.emoji} ${slotTag} — ${def.name}: случайное место попадания, от лечения до мгновенного нокаута`);
     } else {
       lines.push(`${def.emoji} ${slotTag} — ${def.name}: урон ×${def.multiplier}`);
