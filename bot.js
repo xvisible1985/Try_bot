@@ -3748,9 +3748,15 @@ bot.on('callback_query', async (query) => {
   // docs/superpowers/specs/2026-08-25-wallet-design.md). Coins are
   // fungible — unlike weapon ownership, which is a unique resource a
   // second click naturally can't re-steal — so this needs an explicit
-  // double-click guard. Reuses /give's existing resolvedGiveOffers Set
-  // rather than introducing a second near-identical one; the two
-  // features' offer messages never collide.
+  // double-click guard (the steal_yes:/steal_no: branch below shares
+  // this same guard too, so "one action per knockout" — weapon, wallet,
+  // or decline — actually holds across all three, not just this one).
+  // Reuses /give's existing resolvedGiveOffers Set rather than
+  // introducing a second near-identical one — safe because the dedup
+  // key is chatId:messageId, and Telegram message_ids are never reused
+  // within a chat, so a /give offer and a knockout-loot offer can never
+  // collide regardless of which feature's callback_data prefix is on
+  // the button actually clicked.
   if (data.startsWith('steal_coins:')) {
     const [, attackerIdStr, victimIdStr] = data.split(':');
     const attackerId = Number(attackerIdStr);
@@ -3816,6 +3822,18 @@ bot.on('callback_query', async (query) => {
   // otherwise keeps the original keyboard, which would leave the buttons
   // clickable again after this resolves.
   const editOpts = { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } };
+
+  // Same guard steal_coins: uses below, shared across this whole offer
+  // message — without it, tapping a weapon button and the wallet button
+  // in quick succession (before editMessageText's round-trip visibly
+  // disables the sibling buttons) could walk away with both, instead of
+  // "one action per knockout" actually being enforced.
+  const resolvedKey = `${chatId}:${messageId}`;
+  if (resolvedGiveOffers.has(resolvedKey)) {
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+  resolvedGiveOffers.add(resolvedKey);
+  if (resolvedGiveOffers.size > MAX_RESOLVED_GIVE_OFFERS) resolvedGiveOffers.delete(resolvedGiveOffers.values().next().value);
 
   if (action === 'steal_no') {
     await bot.editMessageText('Оружие оставлено — трофей не забран.', editOpts).catch(() => {});
