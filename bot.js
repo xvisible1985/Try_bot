@@ -4257,12 +4257,16 @@ function arenaTick() {
     const now = Math.floor(Date.now() / 1000);
 
     // Knife decay — checked every tick regardless of whether a new drop
-    // fires this time, since its 3h timer runs independently of the
-    // drop schedule (it started whenever it was last picked up, not
-    // whenever the crate wave landed).
-    const knifeRow = db.prepare("SELECT owner_user_id, owner_username, expires_at FROM weapon_ownership WHERE weapon_key = 'knife' AND owner_type = 'human'").get();
-    if (knifeRow && knifeRow.expires_at && knifeRow.expires_at < now) {
-      db.prepare("UPDATE weapon_ownership SET owner_type = 'none', owner_user_id = NULL, owner_username = NULL, expires_at = NULL WHERE weapon_key = 'knife'").run();
+    // fires this time, since each knife's 3h timer runs independently of
+    // both the drop schedule and every other knife (it started whenever
+    // THAT knife was acquired, not when any crate wave landed). Only
+    // is_dropped = 0 knives decay — same "expiry effectively pauses while
+    // fumble-dropped and unclaimed" quirk the old singleton-knife code
+    // already had (it only ever checked owner_type = 'human'), carried
+    // over unchanged rather than "fixed" as part of this refactor.
+    const expiredKnives = db.prepare("SELECT id, owner_user_id FROM owned_knives WHERE is_dropped = 0 AND expires_at < ?").all(now);
+    for (const knifeRow of expiredKnives) {
+      db.prepare('DELETE FROM owned_knives WHERE id = ?').run(knifeRow.id);
       const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(knifeRow.owner_user_id);
       const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${knifeRow.owner_user_id}`;
       bot.sendMessage(ARENA_CHAT_ID, `🔪💨 Ржавый нож у ${label} рассыпался от старости!`).catch(() => {});
@@ -4274,19 +4278,10 @@ function arenaTick() {
     if ((now - lastDropAt) * 1000 < ARENA_DROP_INTERVAL_MS) return;
 
     const newBatchId = state.current_batch_id + 1;
-    // Only 1 knife ever exists at a time (weapon_ownership has exactly
-    // one 'knife' row) — since the drop cadence (3h) equals the knife's
-    // own decay timer (3h), a new batch landing while the previous
-    // knife is still held (or lying fumble-dropped, unclaimed) would
-    // otherwise silently steal/overwrite it via /pick's unconditional
-    // UPDATE. The decay check above already reverts an expired one to
-    // 'none' earlier in this same tick, so re-querying here reflects
-    // that immediately — only offer a fresh knife when none currently
-    // exists.
-    const knifeNow = db.prepare("SELECT owner_type FROM weapon_ownership WHERE weapon_key = 'knife'").get();
-    const crateTypes = knifeNow.owner_type === 'none'
-      ? ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir', 'knife']
-      : ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir'];
+    // No more scarcity gate needed — knives are no longer a shared
+    // singleton (see docs/superpowers/specs/2026-08-25-knife-multi-
+    // instance-design.md), so every batch always includes one.
+    const crateTypes = ['health_elixir', 'health_elixir', 'energy_elixir', 'energy_elixir', 'knife'];
     const insertCrate = db.prepare('INSERT INTO arena_crates (batch_id, crate_type, claimed_by) VALUES (?, ?, NULL)');
     const insertBatch = db.transaction((types) => {
       for (const type of types) insertCrate.run(newBatchId, type);
