@@ -475,6 +475,44 @@ db.exec(`
     owner_username TEXT
   )
 `);
+
+// Knife instances — see
+// docs/superpowers/specs/2026-08-25-knife-multi-instance-design.md.
+// Unlike every weapon in weapon_ownership (weapon_key is a PK, so at
+// most one of each can ever exist), a player can hold several knives
+// at once, each independently decaying 3h after its own acquisition —
+// one row per physical knife. is_dropped/dropped_chat_id mirror
+// weapon_ownership's own fumble-drop convention exactly (owner_user_id
+// repurposed to "who dropped it" while is_dropped=1, so they can't
+// immediately re-pick their own).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS owned_knives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id INTEGER NOT NULL,
+    owner_username TEXT,
+    is_dropped INTEGER NOT NULL DEFAULT 0,
+    dropped_chat_id INTEGER,
+    acquired_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )
+`);
+
+// One-time: carry over a currently-actively-held knife (if any) into
+// its own owned_knives row, then retire weapon_ownership's singleton
+// knife row entirely — going forward, /pick, the shop, and every other
+// knife-touching site use owned_knives exclusively. A fumble-dropped-
+// but-unclaimed knife at migration time is intentionally NOT carried
+// over (an edge case not worth the extra complexity) — it simply
+// ceases to exist, same as if it had fully decayed.
+runOnce('2026-08-25-knife-multi-instance-migration', () => {
+  const existing = db.prepare("SELECT owner_user_id, owner_username, expires_at FROM weapon_ownership WHERE weapon_key = 'knife' AND owner_type = 'human'").get();
+  if (existing) {
+    db.prepare('INSERT INTO owned_knives (owner_user_id, owner_username, is_dropped, dropped_chat_id, acquired_at, expires_at) VALUES (?, ?, 0, NULL, ?, ?)')
+      .run(existing.owner_user_id, existing.owner_username, Math.floor(Date.now() / 1000), existing.expires_at);
+  }
+  db.exec("DELETE FROM weapon_ownership WHERE weapon_key = 'knife'");
+});
+
 // Natural-0 fumble drop (see /kick below): owner_type briefly becomes
 // 'dropped' (owner_user_id repurposed to mean "who dropped it, so they
 // can't immediately re-pick-up their own weapon" rather than "who holds
