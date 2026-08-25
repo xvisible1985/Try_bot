@@ -280,8 +280,8 @@ try {
 } catch {}
 // Bat's 30%-on-hit stun (see performKick's weapon.key === 'bat' block) —
 // while active, the stunned person's own /kick refuses outright, same
-// idiom as isKnockedOut/isHidden below (a plain lazy timestamp read, no
-// separate cleanup needed).
+// idiom as isHidden below (a plain lazy timestamp read, no separate
+// cleanup needed).
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN stunned_until INTEGER');
 } catch {}
@@ -884,25 +884,6 @@ function filterProfanity(text, replacement = 'Хрю-хрю') {
 function isMuted(userId) {
   const row = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(userId);
   if (!row) return false;
-  if (row.expires_at && row.expires_at * 1000 < Date.now()) {
-    db.prepare('DELETE FROM mutes WHERE user_id = ?').run(userId);
-    return false;
-  }
-  return true;
-}
-
-// Whether an attacker is still within their post-knockout mute (see
-// damageHuman's muteUser(..., 'драка', 30 min) call below). /kick used
-// to gate on health === 0 directly, but healthRegenTick's hourly
-// trickle can bring health back above 0 within as little as 10 minutes
-// — well before the intended 30-minute "в отключке" window ends —
-// which let a just-regenerated attacker swing again with no warning.
-// Checking the mute row (by reason, not by admin mutes in general) is
-// the actual source of truth for "still down from a fight" regardless
-// of how far health has already regenerated.
-function isKnockedOut(userId) {
-  const row = db.prepare('SELECT muted_by_name, expires_at FROM mutes WHERE user_id = ?').get(userId);
-  if (!row || row.muted_by_name !== 'драка') return false;
   if (row.expires_at && row.expires_at * 1000 < Date.now()) {
     db.prepare('DELETE FROM mutes WHERE user_id = ?').run(userId);
     return false;
@@ -1972,12 +1953,12 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     bot.sendMessage(chatId, `${targetLabel} прячется в чулане — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
-
-  const attackerHealth = getUserHealth(attacker.id);
-  if (isKnockedOut(attacker.id)) {
-    bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msgLike)).catch(() => {});
+  if (isHospitalized(target.id)) {
+    bot.sendMessage(chatId, `${targetLabel} лежит в больничке — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
+
+  const attackerHealth = getUserHealth(attacker.id);
   if (isStunned(attacker.id)) {
     const stunRow = db.prepare('SELECT stunned_until FROM user_health WHERE user_id = ?').get(attacker.id);
     const minutesLeft = Math.ceil((stunRow.stunned_until * 1000 - Date.now()) / 60000);
@@ -2018,6 +1999,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   if (isHidden(attacker.id)) {
     endHideSession(attacker.id, Math.floor(Date.now() / 1000));
     await bot.sendMessage(chatId, `🚪 ${actorLabel} выскакивает из чулана, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
+  }
+  if (isHospitalized(attacker.id)) {
+    db.prepare('UPDATE user_health SET hospitalized_since = NULL WHERE user_id = ?').run(attacker.id);
+    await bot.sendMessage(chatId, `🏥 ${actorLabel} выписывается из больнички, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
   }
   consumeEnergy(attacker.id);
 
@@ -3681,7 +3666,7 @@ bot.on('callback_query', async (query) => {
 // server time, a full restore to max_health for everyone, guarded by
 // health_regen_state.last_full_restore_date so it only fires once per
 // calendar day rather than on every tick during the 04:00 hour.
-const HEALTH_REGEN_PER_HOUR = 10;
+const HEALTH_REGEN_PER_HOUR = 20;
 const HEALTH_REGEN_TICK_MS = 10 * 60 * 1000;
 // Energy regens on its own fixed cadence (1 point per 20 minutes, no
 // proration) rather than health's per-hour rate — simpler since 1 is
@@ -3693,12 +3678,17 @@ function healthRegenTick() {
   try {
     const now = Math.floor(Date.now() / 1000);
 
-    const rows = db.prepare('SELECT user_id, health, max_health, last_regen_at FROM user_health WHERE health < max_health').all();
+    const rows = db.prepare('SELECT user_id, health, max_health, last_regen_at, hospitalized_since FROM user_health WHERE health < max_health').all();
     for (const row of rows) {
       const elapsedSeconds = row.last_regen_at ? now - row.last_regen_at : 3600;
-      const gain = Math.floor((elapsedSeconds / 3600) * HEALTH_REGEN_PER_HOUR);
+      const rate = row.hospitalized_since !== null ? HEALTH_REGEN_PER_HOUR * HOSPITAL_REGEN_MULTIPLIER : HEALTH_REGEN_PER_HOUR;
+      const gain = Math.floor((elapsedSeconds / 3600) * rate);
       if (gain > 0) {
-        db.prepare('UPDATE user_health SET health = MIN(max_health, health + ?), last_regen_at = ? WHERE user_id = ?').run(gain, now, row.user_id);
+        const newHealth = Math.min(row.max_health, row.health + gain);
+        const stillHospitalized = row.hospitalized_since !== null && newHealth < HOSPITAL_EXIT_HEALTH;
+        db.prepare(
+          'UPDATE user_health SET health = ?, last_regen_at = ?, hospitalized_since = ? WHERE user_id = ?'
+        ).run(newHealth, now, stillHospitalized ? row.hospitalized_since : null, row.user_id);
       }
     }
 
