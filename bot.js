@@ -1950,8 +1950,9 @@ bot.onText(/\/pick\b/i, (msg) => {
     db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs + 1 WHERE user_id = ?').run(msg.from.id);
     bot.sendMessage(msg.chat.id, `📦🧪⚡ ${actorLabel} открыл ящик и нашёл эликсир энергии! (использовать — /recharge)`, threadOpts(msg)).catch(() => {});
   } else {
-    const expiresAt = Math.floor(Date.now() / 1000) + 3 * 3600;
-    db.prepare("UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ?, expires_at = ? WHERE weapon_key = 'knife'").run(msg.from.id, msg.from.username, expiresAt);
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + 3 * 3600;
+    db.prepare('INSERT INTO owned_knives (owner_user_id, owner_username, is_dropped, dropped_chat_id, acquired_at, expires_at) VALUES (?, ?, 0, NULL, ?, ?)').run(msg.from.id, msg.from.username, now, expiresAt);
     bot.sendMessage(msg.chat.id, `📦🔪 ${actorLabel} открыл ящик и нашёл ржавый нож! Урон ×1.5, рассыплется через 3 часа.`, threadOpts(msg)).catch(() => {});
   }
 });
