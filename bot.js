@@ -3789,6 +3789,13 @@ bot.on('callback_query', async (query) => {
 
     const amount = Math.floor(Math.random() * currentCoins) + 1;
     db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ?').run(amount, victimId);
+    // ensureStatsRow before crediting — same defensive precedent /give's
+    // gv_y branch follows, so a credit never silently no-ops if the
+    // attacker somehow lacks a pvp_stats row (today that can't happen,
+    // since reaching performKick already requires isWarrior(attacker.id),
+    // which itself requires the row to exist — but don't rely on that
+    // invariant staying true forever without a guard here too).
+    ensureStatsRow(query.from.id);
     db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(amount, query.from.id);
     await bot.editMessageText(`🪙 ${actorLabel} обшарил(а) карманы отключившегося и стащил(а) ${amount} монет!`, editOpts).catch(() => {});
     return bot.answerCallbackQuery(query.id).catch(() => {});
