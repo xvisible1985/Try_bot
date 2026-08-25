@@ -1618,7 +1618,10 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
 // hit /kick or /hide at least once), by known_users' cached display
 // name, with their current hidden status — чулан occupants listed first.
 bot.onText(/\/find\b/, (msg) => {
-  const fighters = db.prepare('SELECT user_id FROM user_health').all();
+  // Only warriors — user_health also picks up non-warrior/troll-bot
+  // activity (that table is shared cross-process), which isn't a
+  // meaningful "where is this fighter" answer for /kick's own roster.
+  const fighters = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all();
   if (!fighters.length) {
     bot.sendMessage(msg.chat.id, 'Пока никто не дрался и не прятался.', threadOpts(msg)).catch(() => {});
     return;
