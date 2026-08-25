@@ -2038,7 +2038,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   }
   if (isDefending(attacker.id)) {
     db.prepare('UPDATE buffs SET defend_until = NULL WHERE user_id = ?').run(attacker.id);
-    await bot.sendMessage(chatId, `🛡️ ${actorLabel} опускает защиту, чтобы атаковать!`, threadOpts(msgLike)).catch(() => {});
+    await bot.sendMessage(chatId, `🛡️ ${actorLabel} опускает защиту, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
   }
   consumeEnergy(attacker.id);
 
