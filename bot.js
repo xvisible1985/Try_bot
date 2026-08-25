@@ -2036,6 +2036,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     db.prepare('UPDATE user_health SET hospitalized_since = NULL WHERE user_id = ?').run(attacker.id);
     await bot.sendMessage(chatId, `🏥 ${actorLabel} выписывается из больнички, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
   }
+  if (isDefending(attacker.id)) {
+    db.prepare('UPDATE buffs SET defend_until = NULL WHERE user_id = ?').run(attacker.id);
+    await bot.sendMessage(chatId, `🛡️ ${actorLabel} опускает защиту, чтобы атаковать!`, threadOpts(msgLike)).catch(() => {});
+  }
   consumeEnergy(attacker.id);
 
   const bodyPart = pick(PVP_BODY_PARTS);
@@ -2061,8 +2065,9 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     const targetInjury = getUserInjury(target.id);
     const targetStats = getStats(target.id);
     const dodgeBuffBonus = getHitThreshold(target.id) - 50; // active kuni dodge buff, mapped onto this scale
+    const defendDodgeBonus = isDefending(target.id) ? DEFEND_DODGE_BONUS : 0;
     const defenderRoll = Math.floor(Math.random() * 101);
-    defenderScore = defenderRoll + dodgeBuffBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
+    defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
     success = attackerScore > defenderScore;
     dodgedByDefender = !success;
   }
@@ -2103,6 +2108,11 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
 
   const strengthFactor = 1 + attackerStats.strength * STRENGTH_DAMAGE_PER_POINT;
   const armInjuryFactor = attackerInjury === 'arm' ? ARM_INJURY_DAMAGE_MULT : 1;
+  // Excluded from nat-100, carrot "ass", carrot "dick"/"mouth" (heals,
+  // not damage), and axe's flat extra -10 — same "exact-value effect,
+  // not scaled by anything" precedent strengthFactor/armInjuryFactor
+  // already follow for those same sites.
+  const defendFactor = isDefending(target.id) ? (1 - DEFEND_DAMAGE_REDUCTION) : 1;
 
   const targetHealthBefore = getUserHealth(target.id);
   let targetHealthAfter;
@@ -2127,11 +2137,11 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
 
     if (hole === 'ear') {
-      const dmg = Math.round(rawDmg * 0.8 * strengthFactor * armInjuryFactor);
+      const dmg = Math.round(rawDmg * 0.8 * strengthFactor * armInjuryFactor * defendFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'nose') {
-      const dmg = Math.round(rawDmg * 0.9 * strengthFactor * armInjuryFactor);
+      const dmg = Math.round(rawDmg * 0.9 * strengthFactor * armInjuryFactor * defendFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'mouth') {
@@ -2160,7 +2170,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     }
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * weapon.multiplier * strengthFactor * armInjuryFactor);
+    const dmg = Math.round(rawDmg * weapon.multiplier * strengthFactor * armInjuryFactor * defendFactor);
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
     await bot.sendMessage(
       chatId,
