@@ -1376,18 +1376,22 @@ function damageHuman(userId, chatId, username, damage) {
   getUserHealth(userId);
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('UPDATE user_health SET health = MAX(0, health - ?), last_regen_at = ? WHERE user_id = ? RETURNING health').get(damage, now, userId);
-  if (row.health === 0) {
+  if (row.health === 0 && !isHospitalized(userId) && !isKnockedOut(userId)) {
     // Больничка costs 1 coin to enter — can't pay, don't get admitted.
     // No coins means the guarded UPDATE below matches 0 rows (paid is
     // falsy), same as a missing pvp_stats row entirely (shouldn't
     // happen in practice — reaching 0 HP always implies a warrior, who
     // always has a row — but handled safely regardless).
+    // The isHospitalized/isKnockedOut guard above matters because
+    // damageHuman isn't always the only hit landing on someone in a
+    // single /kick swing — e.g. axe's 20% bonus damage calls this a
+    // second time right after the main hit, on a target already
+    // floored to 0. Without this guard, that second call would charge
+    // a second coin (or, worse, mute an already-hospitalized player
+    // via the no-coins fallback) for the same knockout.
     const paid = db.prepare('UPDATE pvp_stats SET coins = coins - 1 WHERE user_id = ? AND coins >= 1 RETURNING coins').get(userId);
     if (paid) {
-      // COALESCE: re-flooring an already-hospitalized player to 0 again
-      // (e.g. a second hit landing before they've regenerated at all)
-      // must not reset their entry timestamp.
-      db.prepare('UPDATE user_health SET hospitalized_since = COALESCE(hospitalized_since, ?) WHERE user_id = ?').run(now, userId);
+      db.prepare('UPDATE user_health SET hospitalized_since = ? WHERE user_id = ?').run(now, userId);
     } else {
       muteUser(userId, chatId, username, 0, 'драка', 30 * 60 * 1000);
     }
