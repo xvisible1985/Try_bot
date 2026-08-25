@@ -2283,6 +2283,14 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   // which single one to try for (see the callback handler below, which
   // now also rolls 50/50 on whether the grab actually succeeds).
   if (targetHealthAfter === 0) {
+    // Announced unconditionally — the steal-offer message below only
+    // fires when the victim actually holds a weapon, which used to mean
+    // a weaponless knockout produced no chat message at all.
+    await bot.sendMessage(
+      chatId,
+      `🏥 ${targetLabel} без сознания и попадает в больничку — недоступен для удара, пока не наберёт ${HOSPITAL_EXIT_HEALTH} ХП (или сам не решит атаковать раньше).`,
+      threadOpts(msgLike)
+    ).catch(() => {});
     const heldWeapons = getWeaponsFor('human', target.id);
     if (heldWeapons.length > 0) {
       const defs = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key]);
