@@ -2075,10 +2075,23 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   }
 
   const attackerHealth = getUserHealth(attacker.id);
+  // Only reached when больничка couldn't be paid for on the way in (see
+  // damageHuman) — a genuine hard block, unlike больничка's own
+  // attacker handling further down, which allows attacking and ejects
+  // early instead. Checked before isHospitalized below on the (very
+  // rare, cross-bot-only) chance both were somehow true at once — either
+  // order still refuses the attack correctly, this just picks which
+  // message the player sees first.
   if (isKnockedOut(attacker.id)) {
-    bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msgLike)).catch(() => {});
+    const knockoutRow = db.prepare('SELECT expires_at FROM mutes WHERE user_id = ?').get(attacker.id);
+    const minutesLeft = knockoutRow && knockoutRow.expires_at ? Math.ceil((knockoutRow.expires_at * 1000 - Date.now()) / 60000) : null;
+    const etaText = minutesLeft !== null ? ` ещё ${minutesLeft} мин` : '';
+    bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!${etaText}`, threadOpts(msgLike)).catch(() => {});
     return;
   }
+  // Больничка's own early-discharge-by-attacking mechanic (see further
+  // down, right before consumeEnergy) needs at least this much health —
+  // below it, the attack is refused outright and больничка status stays.
   if (isHospitalized(attacker.id) && attackerHealth.health < HOSPITAL_MIN_DISCHARGE_HEALTH) {
     bot.sendMessage(chatId, `${actorLabel}, слишком слаб для драки — нужно хотя бы ${HOSPITAL_MIN_DISCHARGE_HEALTH} ХП, чтобы выписаться из больнички.`, threadOpts(msgLike)).catch(() => {});
     return;
