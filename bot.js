@@ -1237,12 +1237,12 @@ const WEAPON_DEFS = {
   crutch: { name: 'костыль', instrumental: 'костылём', accusative: 'костыль', multiplier: 1.25, emoji: '🩼' },
   horns: { name: 'рога', instrumental: 'рогами', accusative: 'рога', multiplier: 2, emoji: '🐂' },
   carrot: { name: 'морковка', instrumental: 'морковкой', accusative: 'морковку', emoji: '🥕' },
-  // Not seeded to anyone at startup, unlike the 6 above — starts at
-  // owner_type = 'none' (see the seed row below) and only ever becomes
-  // 'human'-held via /pick, with a 3-hour expires_at that arenaTick
-  // watches for and reverts back to 'none' ("рассыпается"). See
-  // getWeaponsFor's expiry filter for how a held-but-expired knife
-  // silently stops counting without needing active cleanup first.
+  // Unlike the 6 weapons above, not a weapon_ownership singleton — see
+  // docs/superpowers/specs/2026-08-25-knife-multi-instance-design.md.
+  // Each physical knife is its own row in owned_knives, so a player can
+  // hold several at once, and multiple players can each hold their own.
+  // Acquired via /pick or /shop, each with an independent 3-hour
+  // expires_at that arenaTick sweeps ("рассыпается").
   knife: { name: 'ржавый нож', instrumental: 'ржавым ножом', accusative: 'ржавый нож', multiplier: 1.5, emoji: '🔪' },
 };
 
