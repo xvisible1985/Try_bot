@@ -2228,6 +2228,14 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   // on what this swing actually turns out to be (including the
   // empty-slot-falls-back-to-bare-handed case). The cooldown's own
   // duration is shortened by the attacker's agility.
+  // Deliberately keyed by weapon.key (bare type, e.g. 'knife'), not
+  // weapon.instanceKey — holding several knives at once shares one
+  // cooldown bucket across all of them. Keying by instanceKey instead
+  // would let a player round-robin between several purchased knives to
+  // bypass the cooldown entirely, which multi-instance knives were never
+  // meant to buy (see docs/superpowers/specs/2026-08-25-knife-multi-
+  // instance-design.md — the benefit is redundancy/tradeability, not
+  // faster attacks).
   const weapon = pickWeaponForAttacker('human', attacker.id, slot, PVP_WEAPONS);
   const effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, PVP_COOLDOWN_MS * (1 - attackerStats.agility * AGILITY_COOLDOWN_PER_POINT));
   const cooldownRemaining = checkPvpCooldown(attacker.id, weapon.key, effectiveCooldownMs);
