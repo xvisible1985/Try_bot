@@ -4094,6 +4094,9 @@ bot.on('callback_query', async (query) => {
           .run(userId, query.from.username, now, now + 3 * 3600);
       }
     } else if (data === 'shop:sell:knife') {
+      // ORDER BY id ASC — a deliberate, deterministic tie-break: selling
+      // when the player holds several knives always gives up the OLDEST
+      // one (soonest to decay anyway), not an arbitrary one.
       const oldest = db.prepare("SELECT id FROM owned_knives WHERE owner_user_id = ? AND is_dropped = 0 AND expires_at > strftime('%s','now') ORDER BY id LIMIT 1").get(userId);
       ok = !!oldest;
       if (ok) {
