@@ -2075,6 +2075,14 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   }
 
   const attackerHealth = getUserHealth(attacker.id);
+  if (isKnockedOut(attacker.id)) {
+    bot.sendMessage(chatId, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (isHospitalized(attacker.id) && attackerHealth.health < HOSPITAL_MIN_DISCHARGE_HEALTH) {
+    bot.sendMessage(chatId, `${actorLabel}, слишком слаб для драки — нужно хотя бы ${HOSPITAL_MIN_DISCHARGE_HEALTH} ХП, чтобы выписаться из больнички.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
   if (isStunned(attacker.id)) {
     const stunRow = db.prepare('SELECT stunned_until FROM user_health WHERE user_id = ?').get(attacker.id);
     const minutesLeft = Math.ceil((stunRow.stunned_until * 1000 - Date.now()) / 60000);
@@ -2359,14 +2367,22 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   // which single one to try for (see the callback handler below, which
   // now also rolls 50/50 on whether the grab actually succeeds).
   if (targetHealthAfter === 0) {
-    // Announced unconditionally — the steal-offer message below only
-    // fires when the victim actually holds a weapon, which used to mean
-    // a weaponless knockout produced no chat message at all.
-    await bot.sendMessage(
-      chatId,
-      `🏥 ${targetLabel} без сознания и попадает в больничку — недоступен для удара, пока не наберёт ${HOSPITAL_EXIT_HEALTH} ХП (или сам не решит атаковать раньше).`,
-      threadOpts(msgLike)
-    ).catch(() => {});
+    // damageHuman already decided (and paid for, or didn't) больничка
+    // entry — isHospitalized(target.id) here just reads back which of
+    // its two branches actually fired, no re-deciding.
+    if (isHospitalized(target.id)) {
+      await bot.sendMessage(
+        chatId,
+        `🏥 ${targetLabel} без сознания и попадает в больничку (−1 монета из кошелька) — недоступен для удара, пока не наберёт ${HOSPITAL_EXIT_HEALTH} ХП (или сам не решит атаковать раньше, если наберётся хотя бы ${HOSPITAL_MIN_DISCHARGE_HEALTH} ХП).`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    } else {
+      await bot.sendMessage(
+        chatId,
+        `😵 ${targetLabel} без сознания, но денег на больничку нет — остаётся на улице, замьючен(а) на 30 мин (не может атаковать).`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    }
     const heldWeapons = getWeaponsFor('human', target.id);
     const victimCoinsRow = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(target.id);
     const victimCoins = victimCoinsRow ? victimCoinsRow.coins : 0;
@@ -3092,11 +3108,11 @@ bot.on('message', async (msg) => {
     const row = db.prepare('SELECT expires_at, muted_by_name FROM mutes WHERE user_id = ?').get(msg.from.id);
     // Knocked out by "Драка" (0 health) gets its own flavor line instead of
     // the normal admin-mute message — same underlying mute mechanism either
-    // way, see muteUser/isMuted above. tg-bot's own /kick no longer ever
-    // writes this mute (больничка replaced it, see hospitalized_since) —
-    // this branch is now only ever reached via a troll-bot-caused
-    // knockout, which still writes a 'драка' mute of its own into this
-    // same shared table.
+    // way, see muteUser/isMuted above. Reached both via a troll-bot-caused
+    // knockout AND via tg-bot's own /kick when больничка couldn't be paid
+    // for (see docs/superpowers/specs/2026-08-25-paid-hospital-design.md
+    // and damageHuman's isKnockedOut fallback) — either source writes the
+    // same 'драка' mute into this same shared table.
     if (row && row.muted_by_name === 'драка') {
       bot.sendMessage(msg.chat.id, `😵 ${msg.from.first_name} находится в отключке...`, threadOpts(msg)).catch(() => {});
       return;
