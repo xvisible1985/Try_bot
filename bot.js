@@ -1975,6 +1975,20 @@ function shopCategoryKeyboard() {
     ],
   };
 }
+function elixirShopText(actorLabel, stats) {
+  return `🧪 ${actorLabel}, магазин эликсиров. Баланс: ${stats.coins} монет. У тебя: ❤️×${stats.health_elixirs}, ⚡×${stats.energy_elixirs}.\n` +
+    `Купить эликсир здоровья — 5 монет | Купить эликсир энергии — 5 монет\n` +
+    `Продать эликсир здоровья — 3 монеты | Продать эликсир энергии — 3 монеты`;
+}
+function elixirShopKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: '🧪❤️ Купить (5)', callback_data: 'shop:buy:health' }, { text: '🧪⚡ Купить (5)', callback_data: 'shop:buy:energy' }],
+      [{ text: '🧪❤️ Продать (3)', callback_data: 'shop:sell:health' }, { text: '🧪⚡ Продать (3)', callback_data: 'shop:sell:energy' }],
+      [{ text: '⬅️ Назад', callback_data: 'shop:back' }],
+    ],
+  };
+}
 bot.onText(/\/shop\b/i, (msg) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   bot.sendMessage(
@@ -3899,6 +3913,75 @@ bot.on('callback_query', async (query) => {
     ensureStatsRow(query.from.id);
     db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(amount, query.from.id);
     await bot.editMessageText(`🪙 ${actorLabel} обшарил(а) карманы отключившегося и стащил(а) ${amount} монет!`, editOpts).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  // /shop — see docs/superpowers/specs/2026-08-25-shop-elixirs-design.md.
+  // Self-service, same idiom as levelup: above — acts on whoever
+  // clicked (query.from.id), not whoever originally ran /shop, since
+  // every user has their own independent pvp_stats row and there's
+  // nothing to authorize against. Message stays editable with a fresh
+  // keyboard, so repeated purchases don't need re-running the command.
+  if (data === 'shop:soon') {
+    return bot.answerCallbackQuery(query.id, { text: 'Скоро!', show_alert: true }).catch(() => {});
+  }
+  if (data === 'shop:back') {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+    await bot.editMessageText(`🏪 ${actorLabel}, магазин:`, {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: shopCategoryKeyboard(),
+    }).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+  if (data === 'shop:elixirs') {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+    ensureStatsRow(query.from.id);
+    const stats = db.prepare('SELECT coins, health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(query.from.id);
+    await bot.editMessageText(elixirShopText(actorLabel, stats), {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: elixirShopKeyboard(),
+    }).catch(() => {});
+    return bot.answerCallbackQuery(query.id).catch(() => {});
+  }
+  if (data.startsWith('shop:buy:') || data.startsWith('shop:sell:')) {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const actorLabel = query.from.username ? `@${query.from.username}` : query.from.first_name;
+    const userId = query.from.id;
+    ensureStatsRow(userId);
+
+    let ok = false;
+    if (data === 'shop:buy:health') {
+      ok = !!db.prepare('UPDATE pvp_stats SET coins = coins - 5 WHERE user_id = ? AND coins >= 5 RETURNING coins').get(userId);
+      if (ok) db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs + 1 WHERE user_id = ?').run(userId);
+    } else if (data === 'shop:buy:energy') {
+      ok = !!db.prepare('UPDATE pvp_stats SET coins = coins - 5 WHERE user_id = ? AND coins >= 5 RETURNING coins').get(userId);
+      if (ok) db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs + 1 WHERE user_id = ?').run(userId);
+    } else if (data === 'shop:sell:health') {
+      ok = !!db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs - 1 WHERE user_id = ? AND health_elixirs >= 1 RETURNING health_elixirs').get(userId);
+      if (ok) db.prepare('UPDATE pvp_stats SET coins = coins + 3 WHERE user_id = ?').run(userId);
+    } else if (data === 'shop:sell:energy') {
+      ok = !!db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs - 1 WHERE user_id = ? AND energy_elixirs >= 1 RETURNING energy_elixirs').get(userId);
+      if (ok) db.prepare('UPDATE pvp_stats SET coins = coins + 3 WHERE user_id = ?').run(userId);
+    }
+
+    if (!ok) {
+      const failText = data.startsWith('shop:buy:') ? 'Не хватает монет' : 'Нечего продать';
+      return bot.answerCallbackQuery(query.id, { text: failText, show_alert: true }).catch(() => {});
+    }
+
+    const stats = db.prepare('SELECT coins, health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(userId);
+    await bot.editMessageText(elixirShopText(actorLabel, stats), {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: elixirShopKeyboard(),
+    }).catch(() => {});
     return bot.answerCallbackQuery(query.id).catch(() => {});
   }
 
