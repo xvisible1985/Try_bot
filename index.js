@@ -3,8 +3,6 @@ const express = require('express');
 const cookieSession = require('cookie-session');
 const gameDb = require('./lib/gameDb');
 const webDb = require('./lib/webDb');
-const { verifyTelegramLogin } = require('./lib/telegramAuth');
-const renderLogin = require('./views/login');
 const { verifyWebAppInitData } = require('./lib/telegramWebApp');
 
 const path = require('path');
@@ -59,22 +57,6 @@ app.use(cookieSession({
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'lax',
 }));
-
-app.get('/login', (req, res) => {
-  res.send(renderLogin(process.env.TG_BOT_USERNAME));
-});
-
-app.get('/login/callback', (req, res) => {
-  const ok = verifyTelegramLogin(req.query, process.env.TG_BOT_TOKEN);
-  if (!ok) return res.status(403).send('Не удалось подтвердить вход через Telegram.');
-  req.session.userId = Number(req.query.id);
-  res.redirect('/');
-});
-
-app.get('/logout', (req, res) => {
-  req.session = null;
-  res.redirect('/');
-});
 
 // No CSRF token here — deliberately. A cross-site attacker can't get a
 // forged body to this route at all: express.json() only parses an
