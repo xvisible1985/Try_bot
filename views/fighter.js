@@ -12,7 +12,7 @@ function weaponDisplay(weaponKey) {
   return WEAPON_DEFS[weaponKey] || { name: weaponKey, emoji: '❓' };
 }
 
-function renderFighter(fighter) {
+function renderFighter(fighter, avatarUrl) {
   if (!fighter) {
     return layout('Боец', '<h1>Ещё не воин</h1><p>Этот игрок пока не зарегистрирован как воин.</p>');
   }
@@ -32,6 +32,7 @@ function renderFighter(fighter) {
 
   return layout(fighter.displayName, `
     <h1>${safeName} — уровень ${fighter.level}</h1>
+    ${avatarUrl ? `<img src="${avatarUrl}" alt="" width="80" height="80" style="border-radius:50%;object-fit:cover;">` : ''}
     <div>${badges}</div>
     <table>
       <tr><td>Точность</td><td>${fighter.accuracy}</td><td>Сила</td><td>${fighter.strength}</td></tr>

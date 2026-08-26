@@ -6,9 +6,15 @@ const webDb = require('./lib/webDb');
 const { verifyTelegramLogin } = require('./lib/telegramAuth');
 const renderLogin = require('./views/login');
 
-const { getLeaderboard, getFighter } = require('./lib/queries');
+const path = require('path');
+const { getLeaderboard, getFighter, getAvatarPath } = require('./lib/queries');
 const renderLeaderboard = require('./views/leaderboard');
 const renderFighter = require('./views/fighter');
+const requireAuth = require('./lib/requireAuth');
+const { makeUploader } = require('./lib/upload');
+const renderAvatarForm = require('./views/avatarForm');
+
+const avatarUpload = makeUploader('avatars', (req) => `${req.session.userId}.jpg`);
 
 const app = express();
 // Needed so req.protocol reflects the real scheme when this sits behind a
@@ -46,10 +52,31 @@ app.get('/', (req, res) => {
   res.send(renderLeaderboard(getLeaderboard()));
 });
 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 app.get('/fighter/:id', (req, res) => {
   const userId = Number(req.params.id);
   if (!Number.isInteger(userId)) return res.status(400).send('Неверный id');
-  res.send(renderFighter(getFighter(userId)));
+  const avatarPath = getAvatarPath(userId);
+  res.send(renderFighter(getFighter(userId), avatarPath ? `/uploads/avatars/${userId}.jpg` : null));
+});
+
+app.get('/me/avatar', requireAuth, (req, res) => {
+  res.send(renderAvatarForm(null));
+});
+
+app.post('/me/avatar', requireAuth, (req, res) => {
+  avatarUpload.single('avatar')(req, res, (err) => {
+    if (err || !req.file) {
+      return res.send(renderAvatarForm('Не удалось загрузить файл — проверь формат (jpeg/png/webp) и размер (до 2 МБ).'));
+    }
+    const webDb = require('./lib/webDb');
+    webDb.prepare(
+      'INSERT INTO avatars (user_id, image_path, uploaded_at) VALUES (?, ?, ?) ' +
+      'ON CONFLICT(user_id) DO UPDATE SET image_path = excluded.image_path, uploaded_at = excluded.uploaded_at'
+    ).run(req.session.userId, `avatars/${req.session.userId}.jpg`, Math.floor(Date.now() / 1000));
+    res.redirect(`/fighter/${req.session.userId}`);
+  });
 });
 
 app.get('/healthz', (req, res) => {
