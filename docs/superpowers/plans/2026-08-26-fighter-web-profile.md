@@ -91,7 +91,7 @@ GAME_DB_PATH=/root/Try_bot/mutes.db
 # tg-bot's own bot token, needed to verify Telegram Login Widget signatures
 TG_BOT_TOKEN=
 # Comma-separated numeric Telegram user_ids allowed into /admin
-ADMIN_USER_IDS=8384023163
+ADMIN_USER_IDS=123456789
 # Random long string used to sign the session cookie
 SESSION_SECRET=
 # Port this app listens on
