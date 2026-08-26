@@ -39,7 +39,15 @@ const bot = new TelegramBot(token, { polling: { autoStart: false }, request: { a
 if (webAppUrl) {
   bot.setChatMenuButton({
     menu_button: JSON.stringify({ type: 'web_app', text: 'Боец', web_app: { url: webAppUrl } }),
-  }).catch(err => console.error('setChatMenuButton failed:', err.message));
+  })
+    // Logs the actual URL on success — cheap way to eyeball-verify the
+    // right site is wired up at deploy time. This is also the one place
+    // to check that TG_BOT_TOKEN in tg-web's own .env is really the same
+    // bot as this one: initData is signed per-bot, so if the two tokens
+    // ever diverge, tg-web's auth silently 403s for everyone with no
+    // crash anywhere — nothing else surfaces that mismatch.
+    .then(() => console.log('menu button set, web_app url:', webAppUrl))
+    .catch(err => console.error('setChatMenuButton failed:', err.message));
 } else {
   console.error('WEB_APP_URL not set — skipping setChatMenuButton');
 }
