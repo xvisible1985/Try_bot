@@ -15,6 +15,7 @@ const requireAdmin = require('./lib/requireAdmin');
 const { makeUploader, extensionFor } = require('./lib/upload');
 const renderAvatarForm = require('./views/avatarForm');
 const renderAdmin = require('./views/admin');
+const WEAPON_DEFS = require('./lib/weaponDefs');
 
 // Uses the upload's real mimetype for the extension (jpg/png/webp) rather
 // than hardcoding .jpg — a PNG saved as "foo.jpg" still displays fine in
@@ -23,8 +24,24 @@ const renderAdmin = require('./views/admin');
 // files (a future resizer, "save as", social-preview unfurlers, etc).
 const avatarUpload = makeUploader('avatars', (req, file) => `${req.session.userId}.${extensionFor(file.mimetype)}`);
 
-const weaponIconUpload = makeUploader('weapons', (req, file) => `${req.body.weapon_key}.${extensionFor(file.mimetype)}`);
-const KNOWN_WEAPON_KEYS = ['bat', 'axe', 'scissors', 'knife', 'carrot', 'horns', 'crutch'];
+// Derived from WEAPON_DEFS rather than hardcoded, so this can't silently
+// drift from the actual known weapon types the way a hand-maintained
+// duplicate list already has, repeatedly, elsewhere in this project.
+const KNOWN_WEAPON_KEYS = Object.keys(WEAPON_DEFS);
+
+// weapon_key comes straight from the request body (a hidden form field on
+// the admin's own page, but still request-controlled data) and becomes
+// part of the filename multer writes to disk BEFORE this route's own
+// handler ever runs — so it must be validated here, inside the filename
+// callback itself, not deferred to after the upload completes. Throwing
+// here aborts the write entirely (see lib/upload.js's makeUploader).
+const weaponIconUpload = makeUploader('weapons', (req, file) => {
+  const weaponKey = req.body.weapon_key;
+  if (!KNOWN_WEAPON_KEYS.includes(weaponKey)) {
+    throw new Error(`rejected weapon_key: ${weaponKey}`);
+  }
+  return `${weaponKey}.${extensionFor(file.mimetype)}`;
+});
 
 const app = express();
 // Needed so req.protocol reflects the real scheme when this sits behind a
@@ -94,11 +111,11 @@ app.get('/admin', requireAdmin, (req, res) => {
 });
 
 app.post('/admin/weapon-icon', requireAdmin, (req, res) => {
-  // multer's own `enctype=multipart/form-data` parsing populates req.body
-  // (including weapon_key) only DURING this call — it isn't available
-  // before .single() runs, which is why weaponIconUpload's own filename
-  // function reads req.body.weapon_key and why validity is re-checked
-  // here afterward rather than in a separate earlier middleware.
+  // weaponIconUpload's own filename callback (lib/upload.js /
+  // KNOWN_WEAPON_KEYS check above) already rejects an unrecognized
+  // weapon_key BEFORE anything is written to disk, surfacing here as
+  // `err`. The KNOWN_WEAPON_KEYS re-check below is now a second,
+  // redundant gate — cheap defense-in-depth, not the primary guard.
   weaponIconUpload.single('icon')(req, res, (err) => {
     if (err) console.error('weapon icon upload error:', err.message);
     if (err || !req.file || !KNOWN_WEAPON_KEYS.includes(req.body.weapon_key)) {
