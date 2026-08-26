@@ -1194,9 +1194,10 @@ Not automated — requires the real VPS, the real bot token, and a real Telegram
   - `ADMIN_USER_IDS=8384023163`
   - `SESSION_SECRET=` (any long random string — e.g. `openssl rand -hex 32`)
   - `PORT=3000` (or whatever's free)
+  - `NODE_ENV=production` — without this the session cookie is issued without the `Secure` flag (see Task 3's cookie-hardening fixup), even though the app is meant to be HTTPS-only.
 - [ ] One-time in Telegram: message `@BotFather`, `/setdomain`, select tg-bot, and set it to wherever this app will be publicly reachable (e.g. `web.example.com`) — the Login Widget will not work without this, regardless of how correct the code is.
 - [ ] Start it: `pm2 start index.js --name tg-web && pm2 save`.
-- [ ] Set up whatever reverse proxy / HTTPS termination already fronts the VPS's other public services to route the chosen domain to `PORT` — this is infrastructure specific to how the VPS is currently set up, not something this plan can specify generically.
+- [ ] Set up whatever reverse proxy / HTTPS termination already fronts the VPS's other public services to route the chosen domain to `PORT`, and make sure it forwards `X-Forwarded-Proto` (most reverse proxies do this by default) — `index.js` sets `trust proxy` and relies on that header to know the original request was HTTPS. This is infrastructure specific to how the VPS is currently set up, not something this plan can specify generically.
 - [ ] Verify: visit the public URL, confirm the leaderboard loads with real warriors from the live game; click through to a fighter profile; log in via the Telegram widget; upload an avatar and confirm it appears on your own profile; confirm a non-admin Telegram account gets a 403 on `/admin`; log in as the admin account and upload a weapon icon, confirm it appears next to that weapon on any fighter who holds one.
 - [ ] Confirm nothing written by this app is visible from `tg-bot`/`troll-bot`'s own commands (e.g. `/me` in Telegram) — `web.db` should be entirely invisible to both bots, proving the read-only boundary held.
 
