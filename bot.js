@@ -2087,6 +2087,7 @@ function weaponShopKeyboard() {
   };
 }
 bot.onText(/\/shop\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   bot.sendMessage(
     msg.chat.id,
@@ -2119,6 +2120,7 @@ function itemLabel(itemType) {
 // duplicates these small per-command snippets instead of extracting a
 // helper.
 bot.onText(/\/give\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   let target = null;
   if (msg.reply_to_message && msg.reply_to_message.from) {
     target = {
@@ -2590,6 +2592,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
 // empty. match[1] is the slot digit, match[2] is the target text. All
 // the actual combat logic lives in performKick above.
 bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const slot = match[1] ? parseInt(match[1], 10) : 0;
 
   let target = null;
@@ -2621,6 +2624,7 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
 // this is "assume a stance," not an attempt that can fail). Cooldown is
 // the stance's own duration, same pattern as kuniFun/kuniAlia/kuniTama.
 bot.onText(/\/defend\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('SELECT defend_until FROM buffs WHERE user_id = ?').get(msg.from.id);
@@ -2649,6 +2653,7 @@ bot.onText(/\/defend\b/i, (msg) => {
 // spend, which happens before its hit/miss roll too.
 const KUNI_ENERGY_COST = 2;
 bot.onText(/\/kuniFun\b/, async (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('SELECT fun_cd_until FROM buffs WHERE user_id = ?').get(msg.from.id);
@@ -2677,6 +2682,7 @@ bot.onText(/\/kuniFun\b/, async (msg) => {
 });
 
 bot.onText(/\/kuniAlia\b/, async (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('SELECT alia_cd_until FROM buffs WHERE user_id = ?').get(msg.from.id);
@@ -2705,6 +2711,7 @@ bot.onText(/\/kuniAlia\b/, async (msg) => {
 });
 
 bot.onText(/\/kuniTama\b/, async (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('SELECT tama_cd_until FROM buffs WHERE user_id = ?').get(msg.from.id);
