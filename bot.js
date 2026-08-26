@@ -11,6 +11,7 @@ const Database = require('better-sqlite3');
 
 const token = process.env.BOT_TOKEN;
 const proxy = process.env.PROXY_URL;
+const webAppUrl = process.env.WEB_APP_URL;
 let agent;
 if (proxy) {
   // keepAlive is essential: the low-powered proxy server drops ~half of fresh
@@ -28,6 +29,20 @@ if (proxy) {
 // onText/on('message') handlers below never fire. The request agent routes both
 // the getUpdates poll and all API calls through the proxy tunnel.
 const bot = new TelegramBot(token, { polling: { autoStart: false }, request: { agent } });
+
+// Persistent menu button next to the message input, opening tg-web as a
+// Telegram Mini App — idempotent (safe to call on every boot; Telegram
+// just keeps the setting if unchanged). menu_button must be
+// JSON-stringified here: node-telegram-bot-api only auto-serializes
+// `reply_markup` for form fields (see its _fixReplyMarkup), not
+// menu_button, so passing a raw object would silently form-encode wrong.
+if (webAppUrl) {
+  bot.setChatMenuButton({
+    menu_button: JSON.stringify({ type: 'web_app', text: 'Боец', web_app: { url: webAppUrl } }),
+  }).catch(err => console.error('setChatMenuButton failed:', err.message));
+} else {
+  console.error('WEB_APP_URL not set — skipping setChatMenuButton');
+}
 
 // Dedupe by update_id. Long-polling over the flaky proxy tunnel occasionally
 // loses a getUpdates response in transit (socket reset mid-flight) even
