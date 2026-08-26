@@ -1,9 +1,11 @@
+const escapeHtml = require('../lib/escapeHtml');
+
 function layout(title, bodyHtml) {
   return `<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     body { font-family: sans-serif; max-width: 720px; margin: 24px auto; padding: 0 12px; }
     .bar-bg { background: #eee; border-radius: 4px; overflow: hidden; height: 10px; }

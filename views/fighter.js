@@ -1,10 +1,23 @@
 const layout = require('./layout');
 const WEAPON_DEFS = require('../lib/weaponDefs');
+const escapeHtml = require('../lib/escapeHtml');
+
+// Falls back to a generic label rather than throwing — this app keeps its
+// own independent copy of WEAPON_DEFS (bot.js has its own, troll-bot has
+// its own too), and this exact class of drift has already caused real
+// crashes across this project's repos before (a weapon added on one side
+// but not the other). An unrecognized weapon_key should degrade to "❓",
+// not 500 the whole profile page.
+function weaponDisplay(weaponKey) {
+  return WEAPON_DEFS[weaponKey] || { name: weaponKey, emoji: '❓' };
+}
 
 function renderFighter(fighter) {
   if (!fighter) {
     return layout('Боец', '<h1>Ещё не воин</h1><p>Этот игрок пока не зарегистрирован как воин.</p>');
   }
+
+  const safeName = escapeHtml(fighter.displayName);
 
   const badges = [
     fighter.isHospitalized ? '<span class="badge hospital">🏥 в больничке</span>' : '',
@@ -12,10 +25,13 @@ function renderFighter(fighter) {
     fighter.injury ? `<span class="badge injury">🤕 травма (${fighter.injury.minutesLeft} мин)</span>` : '',
   ].join('');
 
-  const weaponIcons = fighter.weapons.map(w => `<span title="${WEAPON_DEFS[w.weapon_key].name}">${WEAPON_DEFS[w.weapon_key].emoji}</span>`).join(' ') || '(пусто)';
+  const weaponIcons = fighter.weapons.map(w => {
+    const def = weaponDisplay(w.weapon_key);
+    return `<span title="${escapeHtml(def.name)}">${def.emoji}</span>`;
+  }).join(' ') || '(пусто)';
 
   return layout(fighter.displayName, `
-    <h1>${fighter.displayName} — уровень ${fighter.level}</h1>
+    <h1>${safeName} — уровень ${fighter.level}</h1>
     <div>${badges}</div>
     <table>
       <tr><td>Точность</td><td>${fighter.accuracy}</td><td>Сила</td><td>${fighter.strength}</td></tr>
