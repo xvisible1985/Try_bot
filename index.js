@@ -11,10 +11,15 @@ const { getLeaderboard, getFighter, getAvatarPath } = require('./lib/queries');
 const renderLeaderboard = require('./views/leaderboard');
 const renderFighter = require('./views/fighter');
 const requireAuth = require('./lib/requireAuth');
-const { makeUploader } = require('./lib/upload');
+const { makeUploader, extensionFor } = require('./lib/upload');
 const renderAvatarForm = require('./views/avatarForm');
 
-const avatarUpload = makeUploader('avatars', (req) => `${req.session.userId}.jpg`);
+// Uses the upload's real mimetype for the extension (jpg/png/webp) rather
+// than hardcoding .jpg — a PNG saved as "foo.jpg" still displays fine in
+// an <img> tag (browsers sniff the real format), but a mismatched
+// extension is a latent trap for anything else that ever touches these
+// files (a future resizer, "save as", social-preview unfurlers, etc).
+const avatarUpload = makeUploader('avatars', (req, file) => `${req.session.userId}.${extensionFor(file.mimetype)}`);
 
 const app = express();
 // Needed so req.protocol reflects the real scheme when this sits behind a
@@ -58,7 +63,7 @@ app.get('/fighter/:id', (req, res) => {
   const userId = Number(req.params.id);
   if (!Number.isInteger(userId)) return res.status(400).send('Неверный id');
   const avatarPath = getAvatarPath(userId);
-  res.send(renderFighter(getFighter(userId), avatarPath ? `/uploads/avatars/${userId}.jpg` : null));
+  res.send(renderFighter(getFighter(userId), avatarPath ? `/uploads/${avatarPath}` : null));
 });
 
 app.get('/me/avatar', requireAuth, (req, res) => {
@@ -67,14 +72,14 @@ app.get('/me/avatar', requireAuth, (req, res) => {
 
 app.post('/me/avatar', requireAuth, (req, res) => {
   avatarUpload.single('avatar')(req, res, (err) => {
+    if (err) console.error('avatar upload error:', err.message);
     if (err || !req.file) {
       return res.send(renderAvatarForm('Не удалось загрузить файл — проверь формат (jpeg/png/webp) и размер (до 2 МБ).'));
     }
-    const webDb = require('./lib/webDb');
     webDb.prepare(
       'INSERT INTO avatars (user_id, image_path, uploaded_at) VALUES (?, ?, ?) ' +
       'ON CONFLICT(user_id) DO UPDATE SET image_path = excluded.image_path, uploaded_at = excluded.uploaded_at'
-    ).run(req.session.userId, `avatars/${req.session.userId}.jpg`, Math.floor(Date.now() / 1000));
+    ).run(req.session.userId, `avatars/${req.file.filename}`, Math.floor(Date.now() / 1000));
     res.redirect(`/fighter/${req.session.userId}`);
   });
 });
