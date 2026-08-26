@@ -11,10 +11,19 @@ const renderLeaderboard = require('./views/leaderboard');
 const renderFighter = require('./views/fighter');
 
 const app = express();
+// Needed so req.protocol reflects the real scheme when this sits behind a
+// reverse proxy terminating HTTPS (see Task 6's deployment) — without it,
+// Express always sees plain HTTP from the proxy, and the `secure` cookie
+// flag below would silently never take effect.
+app.set('trust proxy', 1);
 app.use(cookieSession({
   name: 'session',
   secret: process.env.SESSION_SECRET,
   maxAge: 30 * 24 * 60 * 60 * 1000,
+  // Only mark the cookie Secure in production — local http dev testing
+  // (NODE_ENV unset) would otherwise silently never set the cookie at all.
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
 }));
 
 app.get('/login', (req, res) => {
