@@ -3260,33 +3260,38 @@ bot.on('message', async (msg) => {
     'ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name, last_seen_at = excluded.last_seen_at'
   ).run(msg.from.id, msg.from.username || null, msg.from.first_name || null, Math.floor(Date.now() / 1000));
   // Natural-0 fumble pickup (see /kick's drop above): first message in the
-  // drop's chat from anyone but the dropper claims it. Runs unconditionally,
-  // same reasoning as the resolution UPDATE above — a muted/fisher/molchun
-  // user's message still counts as "writing something in the chat".
-  const droppedHere = db.prepare(
-    "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'dropped' AND dropped_chat_id = ? AND owner_user_id != ?"
-  ).all(msg.chat.id, msg.from.id);
-  for (const row of droppedHere) {
-    const changed = db.prepare(
-      "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ?, dropped_chat_id = NULL WHERE weapon_key = ? AND owner_type = 'dropped' AND dropped_chat_id = ?"
-    ).run(msg.from.id, msg.from.username, row.weapon_key, msg.chat.id);
-    if (changed.changes > 0) {
-      const def = WEAPON_DEFS[row.weapon_key];
-      const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-      bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
+  // drop's chat from anyone but the dropper claims it. Runs unconditionally
+  // (same reasoning as the resolution UPDATE above — a muted/fisher/molchun
+  // user's message still counts as "writing something in the chat"), EXCEPT
+  // while PvP is paused (see /pvpon//pvpoff) — a pause is meant to freeze
+  // every PvP state change, and this ambient listener is no exception even
+  // though it isn't itself a command.
+  if (!isPvpPaused()) {
+    const droppedHere = db.prepare(
+      "SELECT weapon_key FROM weapon_ownership WHERE owner_type = 'dropped' AND dropped_chat_id = ? AND owner_user_id != ?"
+    ).all(msg.chat.id, msg.from.id);
+    for (const row of droppedHere) {
+      const changed = db.prepare(
+        "UPDATE weapon_ownership SET owner_type = 'human', owner_user_id = ?, owner_username = ?, dropped_chat_id = NULL WHERE weapon_key = ? AND owner_type = 'dropped' AND dropped_chat_id = ?"
+      ).run(msg.from.id, msg.from.username, row.weapon_key, msg.chat.id);
+      if (changed.changes > 0) {
+        const def = WEAPON_DEFS[row.weapon_key];
+        const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+        bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
+      }
     }
-  }
-  const droppedKnivesHere = db.prepare(
-    'SELECT id FROM owned_knives WHERE is_dropped = 1 AND dropped_chat_id = ? AND owner_user_id != ?'
-  ).all(msg.chat.id, msg.from.id);
-  for (const row of droppedKnivesHere) {
-    const changed = db.prepare(
-      'UPDATE owned_knives SET owner_user_id = ?, owner_username = ?, is_dropped = 0, dropped_chat_id = NULL WHERE id = ? AND is_dropped = 1 AND dropped_chat_id = ?'
-    ).run(msg.from.id, msg.from.username, row.id, msg.chat.id);
-    if (changed.changes > 0) {
-      const def = WEAPON_DEFS.knife;
-      const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
-      bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
+    const droppedKnivesHere = db.prepare(
+      'SELECT id FROM owned_knives WHERE is_dropped = 1 AND dropped_chat_id = ? AND owner_user_id != ?'
+    ).all(msg.chat.id, msg.from.id);
+    for (const row of droppedKnivesHere) {
+      const changed = db.prepare(
+        'UPDATE owned_knives SET owner_user_id = ?, owner_username = ?, is_dropped = 0, dropped_chat_id = NULL WHERE id = ? AND is_dropped = 1 AND dropped_chat_id = ?'
+      ).run(msg.from.id, msg.from.username, row.id, msg.chat.id);
+      if (changed.changes > 0) {
+        const def = WEAPON_DEFS.knife;
+        const finderLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+        bot.sendMessage(msg.chat.id, `${def.emoji} ${finderLabel} находит и забирает ${def.accusative} — теперь бьёт ${def.instrumental} сам!`, threadOpts(msg)).catch(() => {});
+      }
     }
   }
   // must run first, unconditionally — otherwise muted/fisher/molchun users' messages never enter the recency buffer, breaking cough-targeting later
