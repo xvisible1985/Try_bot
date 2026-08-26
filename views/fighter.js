@@ -12,7 +12,7 @@ function weaponDisplay(weaponKey) {
   return WEAPON_DEFS[weaponKey] || { name: weaponKey, emoji: '❓' };
 }
 
-function renderFighter(fighter, avatarUrl) {
+function renderFighter(fighter, avatarUrl, weaponIcons) {
   if (!fighter) {
     return layout('Боец', '<h1>Ещё не воин</h1><p>Этот игрок пока не зарегистрирован как воин.</p>');
   }
@@ -25,9 +25,12 @@ function renderFighter(fighter, avatarUrl) {
     fighter.injury ? `<span class="badge injury">🤕 травма (${fighter.injury.minutesLeft} мин)</span>` : '',
   ].join('');
 
-  const weaponIcons = fighter.weapons.map(w => {
+  const weaponHtml = fighter.weapons.map(w => {
     const def = weaponDisplay(w.weapon_key);
-    return `<span title="${escapeHtml(def.name)}">${def.emoji}</span>`;
+    const iconPath = weaponIcons[w.weapon_key];
+    return iconPath
+      ? `<img src="/uploads/${iconPath}" title="${escapeHtml(def.name)}" width="24" height="24">`
+      : `<span title="${escapeHtml(def.name)}">${def.emoji}</span>`;
   }).join(' ') || '(пусто)';
 
   return layout(fighter.displayName, `
@@ -43,7 +46,7 @@ function renderFighter(fighter, avatarUrl) {
     <p>⚡ Энергия: ${fighter.energy}/${fighter.maxEnergy}</p>
     <div class="bar-bg"><div class="bar-fill energy" style="width:${Math.round(100 * fighter.energy / fighter.maxEnergy)}%"></div></div>
     <p>🪙 Монеты: ${fighter.coins}</p>
-    <p>Оружие: ${weaponIcons}</p>
+    <p>Оружие: ${weaponHtml}</p>
   `);
 }
 
