@@ -3814,6 +3814,11 @@ bot.on('message', (msg) => console.log('сообщение от:', msg.from?.use
 // stale snapshot.
 bot.on('callback_query', async (query) => {
   const data = query.data || '';
+  // This whole handler exclusively serves PvP callback data (levelup:,
+  // gv_i:, gv_y:/gv_n:, steal_coins:, shop:*, steal_yes:/steal_no:) —
+  // no non-PvP feature routes through it, so one guard at the top
+  // covers every branch below.
+  if (isPvpPaused()) return bot.answerCallbackQuery(query.id, { text: 'PvP сейчас приостановлен', show_alert: true }).catch(() => {});
 
   // /levelup's stat buttons — acts on whoever clicked (query.from.id),
   // not whoever originally ran /levelup: every user has their own
