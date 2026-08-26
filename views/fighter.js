@@ -19,10 +19,14 @@ function renderFighter(fighter, avatarUrl, weaponIcons) {
 
   const safeName = escapeHtml(fighter.displayName);
 
+  // injury.type is one of a fixed enum ('arm' | 'leg' | 'head') written
+  // only by tg-bot's own combat logic, never user free text — no
+  // escaping needed, same trust level as fighter.level/coins/etc.
+  const INJURY_NAMES = { arm: 'рука', leg: 'нога', head: 'голова' };
   const badges = [
     fighter.isHospitalized ? '<span class="badge hospital">🏥 в больничке</span>' : '',
     fighter.isBleeding ? '<span class="badge bleed">🩸 кровоточит</span>' : '',
-    fighter.injury ? `<span class="badge injury">🤕 травма (${fighter.injury.minutesLeft} мин)</span>` : '',
+    fighter.injury ? `<span class="badge injury">🤕 травма: ${INJURY_NAMES[fighter.injury.type] || fighter.injury.type} (${fighter.injury.minutesLeft} мин)</span>` : '',
   ].join('');
 
   const weaponHtml = fighter.weapons.map(w => {
