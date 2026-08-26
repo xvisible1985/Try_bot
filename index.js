@@ -76,6 +76,18 @@ app.get('/logout', (req, res) => {
   res.redirect('/');
 });
 
+// No CSRF token here — deliberately. A cross-site attacker can't get a
+// forged body to this route at all: express.json() only parses an
+// application/json body (a non-safelisted content-type, so a plain
+// cross-site <form> POST can't trigger it, and there's no cors()
+// middleware anywhere in this app to allow a fetch-based cross-origin
+// POST through either). Even bracketing that off, sameSite: 'lax' on
+// the session cookie (see cookieSession(...) above) already blocks a
+// victim's existing session cookie from riding along on a cross-site
+// request. If a `cors()` middleware or urlencoded body support is ever
+// added to this app for an unrelated reason, re-examine this route —
+// either change would silently remove the protection this comment is
+// describing, not adding a new one.
 app.post('/tma/auth', express.json(), (req, res) => {
   const userId = verifyWebAppInitData(req.body.initData, process.env.TG_BOT_TOKEN);
   if (!userId) return res.status(403).json({ ok: false });
