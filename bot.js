@@ -1901,6 +1901,7 @@ bot.onText(/\/warrior\b/i, (msg) => {
 // spec). A null row (someone who's never touched pvp_stats) just reads
 // as 0 — nothing is written here, so no ensureStatsRow call is needed.
 bot.onText(/\/wallet\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const row = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(msg.from.id);
   const coins = row ? row.coins : 0;
@@ -1912,6 +1913,7 @@ bot.onText(/\/wallet\b/i, (msg) => {
 // line: display name, health, held real weapon(s) by emoji (blank if
 // none), level.
 bot.onText(/\/warriors\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const warriors = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1 ORDER BY xp DESC').all();
   if (!warriors.length) {
     bot.sendMessage(msg.chat.id, 'Пока нет ни одного воина — используй /warrior, чтобы стать первым.', threadOpts(msg)).catch(() => {});
@@ -1937,6 +1939,7 @@ bot.onText(/\/warriors\b/i, (msg) => {
 // single-threaded/synchronous execution already makes that essentially
 // impossible here), one crate per player per batch.
 bot.onText(/\/pick\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   if (msg.chat.id !== ARENA_CHAT_ID) {
     bot.sendMessage(msg.chat.id, `${actorLabel}, ящики можно подбирать только в чате «Поединки».`, threadOpts(msg)).catch(() => {});
@@ -1987,6 +1990,7 @@ bot.onText(/\/pick\b/i, (msg) => {
 
 // /inventory — shows the current elixir stockpile (see /pick above).
 bot.onText(/\/inventory\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   ensureStatsRow(msg.from.id);
   const stats = db.prepare('SELECT health_elixirs, energy_elixirs FROM pvp_stats WHERE user_id = ?').get(msg.from.id);
@@ -2003,6 +2007,7 @@ bot.onText(/\/inventory\b/i, (msg) => {
 // node-telegram-bot-api's onText fires every matching handler on a
 // message, so reusing that name would have fired both on every /heal.
 bot.onText(/\/restore\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const spent = db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs - 1 WHERE user_id = ? AND health_elixirs > 0 RETURNING health_elixirs').get(msg.from.id);
   if (!spent) {
@@ -2026,6 +2031,7 @@ bot.onText(/\/restore\b/i, (msg) => {
 // /recharge — spends one stockpiled energy elixir: full refill to
 // max_energy.
 bot.onText(/\/recharge\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const spent = db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs - 1 WHERE user_id = ? AND energy_elixirs > 0 RETURNING energy_elixirs').get(msg.from.id);
   if (!spent) {
