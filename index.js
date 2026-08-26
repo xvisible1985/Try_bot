@@ -1,13 +1,37 @@
 require('dotenv').config();
 const express = require('express');
+const cookieSession = require('cookie-session');
 const gameDb = require('./lib/gameDb');
 const webDb = require('./lib/webDb');
+const { verifyTelegramLogin } = require('./lib/telegramAuth');
+const renderLogin = require('./views/login');
 
 const { getLeaderboard, getFighter } = require('./lib/queries');
 const renderLeaderboard = require('./views/leaderboard');
 const renderFighter = require('./views/fighter');
 
 const app = express();
+app.use(cookieSession({
+  name: 'session',
+  secret: process.env.SESSION_SECRET,
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+}));
+
+app.get('/login', (req, res) => {
+  res.send(renderLogin(process.env.TG_BOT_USERNAME));
+});
+
+app.get('/login/callback', (req, res) => {
+  const ok = verifyTelegramLogin(req.query, process.env.TG_BOT_TOKEN);
+  if (!ok) return res.status(403).send('Не удалось подтвердить вход через Telegram.');
+  req.session.userId = Number(req.query.id);
+  res.redirect('/');
+});
+
+app.get('/logout', (req, res) => {
+  req.session = null;
+  res.redirect('/');
+});
 
 app.get('/', (req, res) => {
   res.send(renderLeaderboard(getLeaderboard()));
