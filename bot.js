@@ -3618,7 +3618,7 @@ bot.on('message', async (msg) => {
 // real Telegram admin/creator status here just meant a silent no-op
 // with zero feedback for anyone who wasn't one) ---
 bot.onText(/\/chatid\b/, (msg) => {
-  bot.sendMessage(msg.chat.id, `chat_id: ${msg.chat.id}`, threadOpts(msg)).catch(() => {});
+  bot.sendMessage(msg.chat.id, `chat_id: ${msg.chat.id}\nmessage_thread_id: ${msg.message_thread_id ?? '(нет — не топик)'}`, threadOpts(msg)).catch(() => {});
 });
 
 // --- Help ---
