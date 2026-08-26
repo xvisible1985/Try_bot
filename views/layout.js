@@ -23,6 +23,18 @@ function layout(title, bodyHtml) {
 </head>
 <body>
 ${bodyHtml}
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+  (function () {
+    if (!window.Telegram || !window.Telegram.WebApp || !window.Telegram.WebApp.initData) return;
+    if (document.cookie.indexOf('session=') !== -1) return;
+    fetch('/tma/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: window.Telegram.WebApp.initData }),
+    }).then(function (r) { if (r.ok) location.reload(); });
+  })();
+</script>
 </body>
 </html>`;
 }

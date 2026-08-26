@@ -5,6 +5,7 @@ const gameDb = require('./lib/gameDb');
 const webDb = require('./lib/webDb');
 const { verifyTelegramLogin } = require('./lib/telegramAuth');
 const renderLogin = require('./views/login');
+const { verifyWebAppInitData } = require('./lib/telegramWebApp');
 
 const path = require('path');
 const { getLeaderboard, getFighter, getAvatarPath, getWeaponIcons } = require('./lib/queries');
@@ -73,6 +74,13 @@ app.get('/login/callback', (req, res) => {
 app.get('/logout', (req, res) => {
   req.session = null;
   res.redirect('/');
+});
+
+app.post('/tma/auth', express.json(), (req, res) => {
+  const userId = verifyWebAppInitData(req.body.initData, process.env.TG_BOT_TOKEN);
+  if (!userId) return res.status(403).json({ ok: false });
+  req.session.userId = userId;
+  res.json({ ok: true });
 });
 
 app.get('/', (req, res) => {
