@@ -1464,6 +1464,16 @@ function damageHuman(userId, chatId, username, damage) {
 // to a single arena chat means the drop's dropped_chat_id is always
 // this same chat too, closing that off entirely.
 const ARENA_CHAT_ID = -1003310018032;
+// "Поединки" is a forum TOPIC inside ARENA_CHAT_ID, not a separate chat —
+// confirmed via /chatid run inside it. Regular command replies stay in
+// the right topic automatically via threadOpts(msg) (msg carries its own
+// message_thread_id), but background jobs (arenaTick/bleedTick/
+// healthRegenTick's daily payout) have no triggering message to read a
+// thread id from, so without this they default to the group's General
+// topic — which is "Таверна" — instead of "Поединки". Every background
+// announcement below must pass { message_thread_id: ARENA_TOPIC_ID }
+// explicitly.
+const ARENA_TOPIC_ID = 175758;
 const pvpCooldowns = new Map();
 const PVP_COOLDOWN_MS = 60 * 1000;
 const MIN_PVP_COOLDOWN_MS = PVP_COOLDOWN_MS * 0.2; // floor at 20% of base (12s) regardless of agility
@@ -4344,7 +4354,7 @@ function healthRegenTick() {
     if (hour === 8 && regenState.last_daily_payout_date !== today) {
       db.exec('UPDATE pvp_stats SET coins = coins + 10 WHERE is_warrior = 1');
       db.prepare('UPDATE health_regen_state SET last_daily_payout_date = ? WHERE id = 1').run(today);
-      bot.sendMessage(ARENA_CHAT_ID, '💰 Всем воинам начислено +10 монет за день!').catch(err => console.error('daily payout announcement failed:', err.message));
+      bot.sendMessage(ARENA_CHAT_ID, '💰 Всем воинам начислено +10 монет за день!', { message_thread_id: ARENA_TOPIC_ID }).catch(err => console.error('daily payout announcement failed:', err.message));
     }
   } catch (err) {
     console.error('healthRegenTick failed:', err.message);
@@ -4387,7 +4397,7 @@ function arenaTick() {
       deleteKnife.run(knifeRow.id);
       const known = getKnownUser.get(knifeRow.owner_user_id);
       const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${knifeRow.owner_user_id}`;
-      bot.sendMessage(ARENA_CHAT_ID, `🔪💨 Ржавый нож у ${label} рассыпался от старости!`).catch(() => {});
+      bot.sendMessage(ARENA_CHAT_ID, `🔪💨 Ржавый нож у ${label} рассыпался от старости!`, { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
     }
 
     if (isArenaNightHour()) return;
@@ -4409,7 +4419,8 @@ function arenaTick() {
 
     bot.sendMessage(
       ARENA_CHAT_ID,
-      '📦☄️ С неба на арену упало 5 ящиков! Внутри: 2 эликсира здоровья, 2 эликсира энергии и ржавый нож. Кто первый напишет /pick — тот и заберёт (только 1 ящик в одни руки).'
+      '📦☄️ С неба на арену упало 5 ящиков! Внутри: 2 эликсира здоровья, 2 эликсира энергии и ржавый нож. Кто первый напишет /pick — тот и заберёт (только 1 ящик в одни руки).',
+      { message_thread_id: ARENA_TOPIC_ID }
     ).catch(() => {});
   } catch (err) {
     console.error('arenaTick failed:', err.message);
@@ -4444,19 +4455,23 @@ function bleedTick() {
     const now = Math.floor(Date.now() / 1000);
     const rows = db.prepare('SELECT user_id, health, bleed_until, bleed_chat_id, last_bleed_stop_attempt_at FROM user_health WHERE bleed_until IS NOT NULL').all();
     for (const row of rows) {
+      // bleed_chat_id is always ARENA_CHAT_ID (applyBleed is only ever
+      // called from performKick, already gated to that chat) — but it's
+      // the group's chat_id, not "Поединки" the topic, so every message
+      // here still needs message_thread_id spelled out explicitly.
       if (row.bleed_until <= now) {
         db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL WHERE user_id = ?').run(row.user_id);
-        bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось само.').catch(() => {});
+        bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось само.', { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
         continue;
       }
       if (row.health === 0) continue;
       const before = row.health;
       const after = damageHuman(row.user_id, row.bleed_chat_id, null, 1);
-      bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение: -1 хп (${before} -> ${after})`).catch(() => {});
+      bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение: -1 хп (${before} -> ${after})`, { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
       if (!row.last_bleed_stop_attempt_at || now - row.last_bleed_stop_attempt_at >= BLEED_STOP_ROLL_INTERVAL_SECONDS) {
         if (Math.random() < 0.5) {
           db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL, last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
-          bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось.').catch(() => {});
+          bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось.', { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
         } else {
           db.prepare('UPDATE user_health SET last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
         }
