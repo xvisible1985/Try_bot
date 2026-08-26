@@ -4293,6 +4293,7 @@ const HEALTH_REGEN_TICK_MS = 10 * 60 * 1000;
 const ENERGY_REGEN_INTERVAL_SECONDS = 10 * 60;
 
 function healthRegenTick() {
+  if (isPvpPaused()) return;
   try {
     const now = Math.floor(Date.now() / 1000);
 
@@ -4362,6 +4363,7 @@ function isArenaNightHour() {
 }
 
 function arenaTick() {
+  if (isPvpPaused()) return;
   try {
     const now = Math.floor(Date.now() / 1000);
 
@@ -4432,6 +4434,7 @@ setTimeout(arenaTick, 60 * 1000);
 const BLEED_TICK_MS = 60 * 1000;
 const BLEED_STOP_ROLL_INTERVAL_SECONDS = 5 * 60;
 function bleedTick() {
+  if (isPvpPaused()) return;
   try {
     const now = Math.floor(Date.now() / 1000);
     const rows = db.prepare('SELECT user_id, health, bleed_until, bleed_chat_id, last_bleed_stop_attempt_at FROM user_health WHERE bleed_until IS NOT NULL').all();
