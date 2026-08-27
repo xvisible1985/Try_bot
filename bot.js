@@ -1220,6 +1220,17 @@ bot.onText(/\/mutes/, (msg) => {
 const PVP_WEAPONS = ['палкой', 'сковородкой', 'веткой', 'ботинком', 'подушкой', 'зонтиком', 'веслом', 'шваброй', 'рыбой', 'кулаком'];
 const PVP_BODY_PARTS = ['по голове', 'по спине', 'по ноге', 'по руке', 'по животу', 'по попе', 'по лбу', 'в бок'];
 
+// Appended after every дилдо hole outcome except the head stun (see
+// weapon.key === 'dildo' in performKick) — one random teasing line per hit.
+const DILDO_INSULTS = [
+  'Даже неодушевлённый предмет справляется с тобой лучше, чем ты сам!',
+  'Ты покраснел сильнее, чем этот дилдо!',
+  'Похоже, это стало кульминацией твоего дня.',
+  'Вот это ты словил — по самые уши, в прямом смысле.',
+  'Реакция была подозрительно довольной для такого удара.',
+  'Даже оранжевый цвет тебе не идёт так, как этот позор.',
+];
+
 // Combat attribute formulas (see docs/superpowers/specs/
 // 2026-08-24-combat-attributes-design.md) — named constants so these
 // are trivial to retune later; they're honest guesses, not
@@ -1279,6 +1290,12 @@ const WEAPON_DEFS = {
   // stronger here than in troll-bot's own Драка, where injuries don't
   // exist and it's cosmetic-only.
   knuckles: { name: 'кастет', instrumental: 'кастетом', accusative: 'кастет', multiplier: 1.5, emoji: '🥊' },
+  // Not seeded to anyone at startup — its first owner is whoever wins the
+  // /box code-guessing game (see BOX_CODE handling below); no
+  // seed_username row exists for it until then. Holes mechanic mirrors
+  // carrot's (see weapon.key === 'dildo' in performKick), no multiplier
+  // used here since every hole sets its own.
+  dildo: { name: 'оранжевый дилдо', instrumental: 'оранжевым дилдо', accusative: 'оранжевый дилдо', emoji: '🍆' },
 };
 
 function getUserInjury(userId) {
@@ -1611,6 +1628,24 @@ function applyDimon(userId, chatId, username) {
     'INSERT INTO dimoniacs (user_id, chat_id, username, message_count, dimon_until) VALUES (?, ?, ?, 0, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET dimon_until = excluded.dimon_until, message_count = 0, chat_id = excluded.chat_id, username = excluded.username'
   ).run(userId, chatId, username, until);
+}
+
+// /box guessing game (see below) — 1 attempt/hour/player, separate from
+// every other cooldown map for the same reason hideCooldowns is its own.
+const boxCooldowns = new Map();
+const BOX_COOLDOWN_MS = 60 * 60 * 1000;
+
+// Lazily generates and persists the 3-digit /box secret the first time
+// it's needed, so restarts don't reroll it — it's meant to stand
+// indefinitely until someone actually guesses it (see the /box command
+// below). Stored as a zero-padded string in bot_settings so a code like
+// 7 round-trips as "007", not "7".
+function getBoxCode() {
+  const row = db.prepare("SELECT value FROM bot_settings WHERE key = 'box_code'").get();
+  if (row) return row.value;
+  const code = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('box_code', ?)").run(code);
+  return code;
 }
 
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
@@ -2023,6 +2058,49 @@ bot.onText(/\/pick\b/i, (msg) => {
     db.prepare('INSERT INTO owned_knives (owner_user_id, owner_username, is_dropped, dropped_chat_id, acquired_at, expires_at) VALUES (?, ?, 0, NULL, ?, ?)').run(msg.from.id, msg.from.username, now, expiresAt);
     bot.sendMessage(msg.chat.id, `📦🔪 ${actorLabel} открыл ящик и нашёл ржавый нож! Урон ×1.5, рассыплется через 3 часа.`, threadOpts(msg)).catch(() => {});
   }
+});
+
+// /box <код> — separate from /pick's crates above: one single locked box
+// with a secret 3-digit code, standing indefinitely until someone guesses
+// it. What's inside stays unrevealed until then (see the design that
+// motivated this — deliberately not telling players it's the orange
+// dildo up front). 1 guess/hour/player (boxCooldowns). Once claimed, the
+// prize is seeded into weapon_ownership and behaves like any other real
+// weapon from then on (stealable, droppable on a nat-0 fumble, etc.) —
+// the presence of that row is itself the "already claimed" flag, so no
+// separate claimed marker is needed.
+bot.onText(/\/box\s+(\d{1,3})\b/, async (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  if (db.prepare("SELECT 1 FROM weapon_ownership WHERE weapon_key = 'dildo'").get()) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ящик уже открыт — приз давно забрали.`, threadOpts(msg)).catch(() => {});
+  }
+
+  const now = Date.now();
+  const last = boxCooldowns.get(msg.from.id);
+  if (last && now - last < BOX_COOLDOWN_MS) {
+    const minutesLeft = Math.ceil((BOX_COOLDOWN_MS - (now - last)) / 60000);
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, следующая попытка через ${minutesLeft} мин.`, threadOpts(msg)).catch(() => {});
+  }
+  boxCooldowns.set(msg.from.id, now);
+
+  const guess = match[1].padStart(3, '0');
+  if (guess !== getBoxCode()) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, неверно.`, threadOpts(msg)).catch(() => {});
+  }
+
+  // Atomic claim: guards the (rare but possible) race of two correct
+  // guesses landing before either response is sent — same "compare and
+  // swap via WHERE" idiom as /pick's own crate claim above.
+  const claimed = db.prepare(
+    "INSERT INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) " +
+    "SELECT 'dildo', NULL, 'human', ?, ? WHERE NOT EXISTS (SELECT 1 FROM weapon_ownership WHERE weapon_key = 'dildo')"
+  ).run(msg.from.id, msg.from.username || null);
+  if (claimed.changes === 0) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, опоздал — приз только что забрали.`, threadOpts(msg)).catch(() => {});
+  }
+  bot.sendMessage(msg.chat.id, `📦🍆 ${actorLabel} угадал код и достаёт из ящика оранжевое дилдо!`, threadOpts(msg)).catch(() => {});
 });
 
 // /inventory — shows the current elixir stockpile (see /pick above).
@@ -2486,6 +2564,43 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
         targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
         await bot.sendMessage(chatId, `🥕💥 ${actorLabel} загоняет ${targetLabel} морковку в очко по самые уши! Вся жизнь снесена, ${targetLabel} в отключке (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
       }
+    }
+  } else if (weapon.key === 'dildo') {
+    // Same 5-hole idea as carrot, plus a 6th (head) that stuns instead of
+    // scaling damage — all 6 equally likely.
+    const holes = ['ear', 'nose', 'mouth', 'pussy', 'ass', 'head'];
+    hole = holes[Math.floor(Math.random() * holes.length)];
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+    const insult = pick(DILDO_INSULTS);
+
+    if (hole === 'ear') {
+      const dmg = Math.round(rawDmg * 0.7 * strengthFactor * armInjuryFactor * defendFactor);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🍆 ${actorLabel} тычет ${targetLabel} оранжевым дилдо в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). ${insult}`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'nose') {
+      const dmg = Math.round(rawDmg * 0.5 * strengthFactor * armInjuryFactor * defendFactor);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🍆 ${actorLabel} водит оранжевым дилдо у носа ${targetLabel}! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). ${insult}`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'mouth') {
+      const dmg = Math.round(rawDmg * 0.7 * strengthFactor * armInjuryFactor * defendFactor);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🍆 ${actorLabel} тычет ${targetLabel} оранжевым дилдо в рот! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). ${insult}`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'pussy') {
+      const dmg = Math.round(rawDmg * 0.5 * strengthFactor * armInjuryFactor * defendFactor);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🍆 ${actorLabel} тычет ${targetLabel} оранжевым дилдо в письку! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). ${insult}`, threadOpts(msgLike)).catch(() => {});
+    } else if (hole === 'ass') {
+      const dmg = Math.round(rawDmg * 3 * strengthFactor * armInjuryFactor * defendFactor);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      await bot.sendMessage(chatId, `🍆 ${actorLabel} загоняет ${targetLabel} оранжевое дилдо в попку! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). ${insult}`, threadOpts(msgLike)).catch(() => {});
+    } else {
+      // head — standard (×1) damage, plus a guaranteed 2-min stun. Same
+      // stunned_until column as bat's own 30%-chance stun.
+      const dmg = Math.round(rawDmg * strengthFactor * armInjuryFactor * defendFactor);
+      targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+      const stunnedUntil = Math.floor(Date.now() / 1000) + 2 * 60;
+      db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+      await bot.sendMessage(chatId, `🍆 ${actorLabel} огревает ${targetLabel} оранжевым дилдо по голове! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). Оглушён на 2 минуты!`, threadOpts(msgLike)).catch(() => {});
     }
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
