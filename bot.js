@@ -2173,7 +2173,15 @@ function itemLabel(itemType) {
 bot.onText(/\/give\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   let target = null;
-  if (msg.reply_to_message && msg.reply_to_message.from) {
+  // Forum topics ("Поединки" included) implement threading via reply
+  // chains under the hood — Telegram auto-sets reply_to_message to the
+  // topic's own opening message (message_id === message_thread_id) on
+  // every plain message posted in the topic, even when nobody tapped
+  // "Reply". Without this check, that phantom reply silently overrode
+  // the actual @username argument and always resolved to whoever
+  // originally opened the topic.
+  const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
+  if (msg.reply_to_message && msg.reply_to_message.from && !isPhantomTopicReply) {
     target = {
       id: msg.reply_to_message.from.id,
       username: msg.reply_to_message.from.username,
@@ -2654,7 +2662,12 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
   const slot = match[1] ? parseInt(match[1], 10) : 0;
 
   let target = null;
-  if (msg.reply_to_message && msg.reply_to_message.from) {
+  // See /give's identical guard above (same copy-pasted target-resolution
+  // snippet) for why this check exists: forum topics auto-attach a
+  // reply_to_message pointing at the topic's own opening message on every
+  // plain post, which would otherwise silently override @username here.
+  const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
+  if (msg.reply_to_message && msg.reply_to_message.from && !isPhantomTopicReply) {
     target = {
       id: msg.reply_to_message.from.id,
       username: msg.reply_to_message.from.username,
