@@ -1271,6 +1271,12 @@ const WEAPON_DEFS = {
   // Acquired via /pick or /shop, each with an independent 3-hour
   // expires_at that arenaTick sweeps ("рассыпается").
   knife: { name: 'ржавый нож', instrumental: 'ржавым ножом', accusative: 'ржавый нож', multiplier: 1.5, emoji: '🔪' },
+  // troll-bot's new unique weapon (seeded to a specific human there,
+  // multiplier already fixed at 1.5) — mirrored here purely so this bot's
+  // own WEAPON_DEFS lookups don't crash if it ever reads/steals a
+  // weapon_ownership row with weapon_key = 'knuckles', same defensive
+  // reason carrot/knife were mirrored the other direction into troll-bot.
+  knuckles: { name: 'кастет', instrumental: 'кастетом', accusative: 'кастет', multiplier: 1.5, emoji: '🥊' },
 };
 
 function getUserInjury(userId) {
