@@ -1271,11 +1271,13 @@ const WEAPON_DEFS = {
   // Acquired via /pick or /shop, each with an independent 3-hour
   // expires_at that arenaTick sweeps ("рассыпается").
   knife: { name: 'ржавый нож', instrumental: 'ржавым ножом', accusative: 'ржавый нож', multiplier: 1.5, emoji: '🔪' },
-  // troll-bot's new unique weapon (seeded to a specific human there,
-  // multiplier already fixed at 1.5) — mirrored here purely so this bot's
-  // own WEAPON_DEFS lookups don't crash if it ever reads/steals a
-  // weapon_ownership row with weapon_key = 'knuckles', same defensive
-  // reason carrot/knife were mirrored the other direction into troll-bot.
+  // Unique real weapon, seeded to a specific human in troll-bot (shared
+  // weapon_ownership, so it can end up here via /kick same as any other
+  // real weapon). Its "always hits the head" property is guaranteed-head
+  // injury on crit (see the injuryType override in performKick) plus a
+  // 20% tooth-knockout on any landed hit (see maybeKnockOutTooth) —
+  // stronger here than in troll-bot's own Драка, where injuries don't
+  // exist and it's cosmetic-only.
   knuckles: { name: 'кастет', instrumental: 'кастетом', accusative: 'кастет', multiplier: 1.5, emoji: '🥊' },
 };
 
@@ -1476,6 +1478,16 @@ function damageHuman(userId, chatId, username, damage) {
     }
   }
   return row.health;
+}
+
+// Кастет-only special effect (see WEAPON_DEFS.knuckles) — 20% chance per
+// landed hit to knock out a tooth, costing the victim 1 energy. Unlike
+// troll-bot's identical copy, no owner-type branch is needed here: /kick
+// is human-vs-human only, so the victim is always a human.
+function maybeKnockOutTooth(victimUserId) {
+  if (Math.random() >= 0.2) return false;
+  db.prepare('UPDATE user_health SET energy = MAX(0, energy - 1) WHERE user_id = ?').run(victimUserId);
+  return true;
 }
 
 // In-memory per-user-per-weapon cooldown — a rate limiter doesn't need to
@@ -2341,7 +2353,7 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   }
   consumeEnergy(attacker.id);
 
-  const bodyPart = pick(PVP_BODY_PARTS);
+  const bodyPart = weapon.key === 'knuckles' ? 'по голове' : pick(PVP_BODY_PARTS);
   const roll = Math.floor(Math.random() * 101);
 
   // Opposed roll: the attacker's d100 (+ точность, - head-injury penalty)
@@ -2523,6 +2535,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     await bot.sendMessage(chatId, `🩼 ${targetLabel} огрёб костылём и теперь бормочет как старик Димон (2 ч)!`, threadOpts(msgLike)).catch(() => {});
   }
 
+  if (weapon.key === 'knuckles' && maybeKnockOutTooth(target.id)) {
+    await bot.sendMessage(chatId, `🦷 Кастет выбил ${targetLabel} зуб — теряет 1 энергии!`, threadOpts(msgLike)).catch(() => {});
+  }
+
   if (weapon.key === 'bat' && Math.random() < 0.3) {
     const stunnedUntil = Math.floor(Date.now() / 1000) + 3 * 60;
     db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
@@ -2556,7 +2572,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   ensureStatsRow(attacker.id);
   db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
   if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass' && !assClenched)) {
-    const injuryType = pick(['arm', 'leg', 'head']);
+    // Кастет always connects with the head — on a crit that means a
+    // guaranteed 'head' injury instead of the usual random arm/leg/head
+    // pick, unlike every other weapon here.
+    const injuryType = weapon.key === 'knuckles' ? 'head' : pick(['arm', 'leg', 'head']);
     const healHours = applyInjury(target.id, injuryType);
     recordInjuryDealt(attacker.id);
     const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
