@@ -2103,6 +2103,25 @@ bot.onText(/\/box\s+(\d{1,3})\b/, async (msg, match) => {
   bot.sendMessage(msg.chat.id, `📦🍆 ${actorLabel} угадал код и достаёт из ящика оранжевое дилдо!`, threadOpts(msg)).catch(() => {});
 });
 
+// One-time "the box falls" announcement for /box above — fires once, 5
+// minutes after the first boot following this deploy, never again after
+// that (even across later restarts), same runOnce idiom as the migrations
+// further up. Contents stay unrevealed in the message itself, matching
+// the design that keeps them a secret until someone actually wins.
+// Skips silently if the box is somehow already claimed by the time the
+// timer fires (e.g. a very fast manual DB edit) — not expected in
+// practice, just cheap insurance.
+runOnce('2026-08-27-box-drop-announcement', () => {
+  setTimeout(() => {
+    if (db.prepare("SELECT 1 FROM weapon_ownership WHERE weapon_key = 'dildo'").get()) return;
+    bot.sendMessage(
+      ARENA_CHAT_ID,
+      '📦❓ С неба упал загадочный запертый ящик с трёхзначным кодом... Что внутри — тайна. Угадай код: /box <код> (1 попытка в час на игрока).',
+      { message_thread_id: ARENA_TOPIC_ID }
+    ).catch(() => {});
+  }, 5 * 60 * 1000);
+});
+
 // /inventory — shows the current elixir stockpile (see /pick above).
 bot.onText(/\/inventory\b/i, (msg) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
