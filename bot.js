@@ -144,11 +144,11 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )
 `);
-// Weapon-triggered timed animal status (see WEAPON_DEFS.carrot and
-// applyTimedAnimal below) — NULL means the existing PERMANENT status
-// set by /pig, /cat, /fox etc. (unchanged), a timestamp means a timed
-// status from a carrot hit that auto-expires. Same idiom as crutch's
-// dimon_until column.
+// Timed animal status column — NULL means the existing PERMANENT status
+// set by /pig, /cat, /fox etc. (unchanged). No longer written by any
+// weapon (carrot's timed cat/fox effect was removed), kept only because
+// the expiry-check reads further down still handle a timed value if one
+// were ever set some other way.
 try {
   db.exec('ALTER TABLE animals ADD COLUMN animal_until INTEGER');
 } catch {}
@@ -1612,21 +1612,6 @@ function applyDimon(userId, chatId, username) {
   ).run(userId, chatId, username, until);
 }
 
-// Weapon-triggered timed animal status (see WEAPON_DEFS.carrot). Never
-// downgrades an existing PERMANENT status (animal_until IS NULL, set
-// by /pig, /cat, /fox etc.) to a timed one — same "never downgrade
-// permanent" guarantee as applyDimon above, for the same reason (a
-// weapon hit can't undo an admin's manual assignment).
-function applyTimedAnimal(userId, chatId, username, animalType) {
-  const existing = db.prepare('SELECT animal_until FROM animals WHERE user_id = ?').get(userId);
-  if (existing && existing.animal_until === null) return;
-  const until = Math.floor(Date.now() / 1000) + 20 * 60;
-  db.prepare(
-    'INSERT INTO animals (user_id, chat_id, username, animal, animal_until) VALUES (?, ?, ?, ?, ?) ' +
-    'ON CONFLICT(user_id) DO UPDATE SET animal = excluded.animal, animal_until = excluded.animal_until, chat_id = excluded.chat_id, username = excluded.username'
-  ).run(userId, chatId, username, animalType, until);
-}
-
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
 // re-trigger your OWN hiding, not how often you can attack.
 const hideCooldowns = new Map();
@@ -2461,15 +2446,15 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
 
     if (hole === 'ear') {
-      const dmg = Math.round(rawDmg * 0.8 * strengthFactor * armInjuryFactor * defendFactor);
+      const dmg = Math.round(rawDmg * 1.2 * strengthFactor * armInjuryFactor * defendFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в ухо! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'nose') {
-      const dmg = Math.round(rawDmg * 0.9 * strengthFactor * armInjuryFactor * defendFactor);
+      const dmg = Math.round(rawDmg * 1.2 * strengthFactor * armInjuryFactor * defendFactor);
       targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в нос! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'mouth') {
-      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
+      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 15);
       const healed = targetHealthAfter - targetHealthBefore.health;
       // Defense-in-depth: больничка already refuses to let a hospitalized
       // player be targeted at all (see isHospitalized(target.id) earlier
@@ -2484,14 +2469,9 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       }
       await bot.sendMessage(chatId, `🥕 ${actorLabel} тычет ${targetLabel} морковкой в рот! ${targetLabel} с хрустом её сгрызает и получает +${healed} здоровья (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
     } else if (hole === 'dick') {
-      targetHealthAfter = Math.min(targetHealthBefore.max_health, targetHealthBefore.health + 20);
-      const healed = targetHealthAfter - targetHealthBefore.health;
-      if (targetHealthAfter >= HOSPITAL_EXIT_HEALTH) {
-        db.prepare('UPDATE user_health SET health = ?, hospitalized_since = NULL WHERE user_id = ?').run(targetHealthAfter, target.id);
-      } else {
-        db.prepare('UPDATE user_health SET health = ? WHERE user_id = ?').run(targetHealthAfter, target.id);
-      }
-      await bot.sendMessage(chatId, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает +${healed} здоровья и оргазм (${targetHealthBefore.health} -> ${targetHealthAfter})!`, threadOpts(msgLike)).catch(() => {});
+      // No heal anymore — purely a flavor outcome now, health untouched.
+      targetHealthAfter = targetHealthBefore.health;
+      await bot.sendMessage(chatId, `🥕😳 ${actorLabel} тычет ${targetLabel} морковкой... не туда! ${targetLabel} получает оргазм (${targetHealthBefore.health})!`, threadOpts(msgLike)).catch(() => {});
     } else {
       // Extra 50/50 roll on top of the general dodge from earlier in
       // performKick — the victim gets one more chance specifically here,
@@ -2515,19 +2495,6 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       `💥 Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
       threadOpts(msgLike)
     ).catch(() => {});
-  }
-
-  // Cat/fox applies on any successful carrot hit regardless of which
-  // branch produced targetHealthAfter (a hole roll above, or a natural
-  // 100 bypassing hole-selection entirely) — pulled out of the carrot
-  // branch itself so the nat-100 path doesn't have to duplicate it.
-  if (weapon.key === 'carrot') {
-    const animalType = Math.random() < 0.5 ? 'cat' : 'fox';
-    applyTimedAnimal(target.id, chatId, target.username || target.firstName, animalType);
-    const animalMsg = animalType === 'cat'
-      ? `🐱 ${targetLabel} на 20 минут теперь мяукает как кошка!`
-      : `🦊 ${targetLabel} на 20 минут теперь рычит как лиса!`;
-    await bot.sendMessage(chatId, animalMsg, threadOpts(msgLike)).catch(() => {});
   }
 
   if (weapon.key === 'scissors') {
