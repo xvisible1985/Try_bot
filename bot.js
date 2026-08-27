@@ -1291,16 +1291,17 @@ function getUserInjury(userId) {
   return row.injury_type;
 }
 
-// Recovery time is rolled fresh each time (2-24h inclusive), not a flat
-// 24h — returns the rolled hours so callers can state it in their message.
+// Recovery time is rolled fresh each time (20-180 min inclusive, i.e. up
+// to 3h), not a flat duration — returns the rolled minutes so callers can
+// state it in their message.
 function applyInjury(userId, injuryType) {
-  const healHours = Math.floor(Math.random() * 23) + 2;
-  const injuredUntil = Math.floor(Date.now() / 1000) + healHours * 3600;
+  const healMinutes = Math.floor(Math.random() * 161) + 20;
+  const injuredUntil = Math.floor(Date.now() / 1000) + healMinutes * 60;
   db.prepare(
     'INSERT INTO injuries (user_id, injury_type, injured_until) VALUES (?, ?, ?) ' +
     'ON CONFLICT(user_id) DO UPDATE SET injury_type = excluded.injury_type, injured_until = excluded.injured_until'
   ).run(userId, injuryType, injuredUntil);
-  return healHours;
+  return healMinutes;
 }
 
 // Lazily creates a 100/100 row on first access, same as troll-bot's own
@@ -2551,12 +2552,12 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     // guaranteed 'head' injury instead of the usual random arm/leg/head
     // pick, unlike every other weapon here.
     const injuryType = weapon.key === 'knuckles' ? 'head' : pick(['arm', 'leg', 'head']);
-    const healHours = applyInjury(target.id, injuryType);
+    const healMinutes = applyInjury(target.id, injuryType);
     recordInjuryDealt(attacker.id);
     const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
     await bot.sendMessage(
       chatId,
-      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healHours} ч).`,
+      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
       threadOpts(msgLike)
     ).catch(() => {});
     if (weapon.key === 'horns') {
