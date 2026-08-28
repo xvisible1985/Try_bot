@@ -1315,6 +1315,109 @@ function resolveDuelTimeout(duel) {
   }
 }
 
+// --- Goblin raid (admin-triggered PvE event, see /goblinraid/attack below) ---
+// 10 goblins, 60 HP / 10 energy each, club (×1 multiplier) attack once a
+// minute. Each one locks onto a random eligible warrior (not hidden, not
+// hospitalized, not already at 0 HP) at spawn and stays locked on that
+// SAME target forever — it never re-rolls on its own, only ever
+// switching because a player actually landed a hit on it (see /attack),
+// at which point it locks onto that attacker instead. If its current
+// target becomes temporarily unreachable it just skips that minute's
+// swing rather than picking someone else. Energy caps total swings at
+// 10 — once spent, the goblin goes harmless but stays alive and
+// lootable for its coins until killed. In-memory only, same convention
+// as activeDuels/pendingDuels — doesn't survive a restart.
+const GOBLIN_NAMES = ['Грызль', 'Шнырь', 'Куцехвост', 'Плюгаш', 'Костолом', 'Гниляк', 'Хрящ', 'Дрызга', 'Мозгоглод', 'Бормотун'];
+const GOBLIN_MAX_HEALTH = 60;
+const GOBLIN_MAX_ENERGY = 10;
+const GOBLIN_ATTACK_INTERVAL_MS = 60 * 1000;
+
+let goblinRaid = null; // { goblins: Map<id, goblin>, chatId, threadId, tickTimer }
+let nextGoblinId = 1;
+// messageId -> goblinId, so /attack can resolve its target by replying to
+// any message that goblin has sent (spawn roster or an attack line)
+// instead of typing its name. Cleared whenever the raid ends.
+const goblinMessageIds = new Map();
+
+// Same "cached display name off known_users, fall back to a bare id"
+// idiom as arenaTick's knife-decay announcement — goblinTick has no real
+// Telegram message to pull a label from, unlike every human-vs-human
+// combat function in this file.
+function labelForUserId(userId) {
+  const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(userId);
+  return known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${userId}`;
+}
+
+function pickEligibleGoblinTarget() {
+  const rows = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all();
+  const eligible = rows
+    .map((r) => r.user_id)
+    .filter((id) => !isHidden(id) && !isHospitalized(id) && getUserHealth(id).health > 0);
+  if (eligible.length === 0) return null;
+  return eligible[Math.floor(Math.random() * eligible.length)];
+}
+
+// Ends the raid once every goblin is dead: stops the tick, announces
+// victory, and clears both module-level maps so nothing lingers for the
+// next raid.
+function checkGoblinRaidCleared() {
+  if (!goblinRaid || [...goblinRaid.goblins.values()].some((g) => g.health > 0)) return;
+  clearInterval(goblinRaid.tickTimer);
+  bot.sendMessage(
+    goblinRaid.chatId,
+    '🏆 Набег гоблинов отбит — все 10 мертвы!',
+    goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
+  ).catch(() => {});
+  goblinMessageIds.clear();
+  goblinRaid = null;
+}
+
+// One shared 60s tick drives every alive, still-energetic goblin's swing
+// — same "one interval, iterate all live entities" idiom as
+// healthRegenTick/arenaTick rather than a per-goblin timer.
+async function goblinTick() {
+  if (!goblinRaid || isPvpPaused()) return;
+  for (const goblin of goblinRaid.goblins.values()) {
+    if (goblin.health <= 0 || goblin.energy <= 0) continue;
+    if (!goblin.targetUserId) {
+      goblin.targetUserId = pickEligibleGoblinTarget();
+      if (!goblin.targetUserId) continue;
+    }
+    if (isHidden(goblin.targetUserId) || isHospitalized(goblin.targetUserId) || getUserHealth(goblin.targetUserId).health === 0) {
+      continue; // waits for its locked target to become reachable again, never re-targets on its own
+    }
+    goblin.energy -= 1;
+    const targetLabel = labelForUserId(goblin.targetUserId);
+    const before = getUserHealth(goblin.targetUserId);
+    const dmg = Math.floor(Math.random() * 20) + 1; // ×1 multiplier, per the design
+    const after = damageHuman(goblin.targetUserId, goblinRaid.chatId, null, dmg);
+    const sent = await bot.sendMessage(
+      goblinRaid.chatId,
+      `🟢 ${goblin.name} бьёт ${targetLabel} дубинкой! Урон: ${dmg} (${before.health} -> ${after})`,
+      goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
+    ).catch(() => null);
+    if (sent) goblinMessageIds.set(sent.message_id, goblin.id);
+
+    if (after === 0) {
+      // Robbery attempt on the kill — 50% chance to even try, and even
+      // then only a random cut of whatever coins they're carrying, not
+      // a guaranteed clean-out.
+      ensureStatsRow(goblin.targetUserId);
+      const victimCoins = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(goblin.targetUserId).coins;
+      if (victimCoins > 0 && Math.random() < 0.5) {
+        const stolen = 1 + Math.floor(Math.random() * victimCoins);
+        db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ?').run(stolen, goblin.targetUserId);
+        goblin.coins += stolen;
+        await bot.sendMessage(
+          goblinRaid.chatId,
+          `🪙 ${goblin.name} обчистил ${targetLabel} на ${stolen} монет, пока тот без сознания!`,
+          goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
+        ).catch(() => {});
+      }
+    }
+  }
+}
+
 // Static per-weapon flavor/multiplier for the three real, stealable
 // weapons (see weapon_ownership above for who currently holds them).
 // Duplicated identically in troll-bot's bot.js — same idiom as
@@ -3058,6 +3161,133 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
   ).catch(() => {});
 });
 
+// /goblinraid — admin-only, starts a goblin raid (see goblinRaid state
+// and goblinTick above). Refuses if one's already running rather than
+// spawning a second overlapping wave.
+bot.onText(/\/goblinraid\b/i, async (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  if (!(await isAdmin(msg))) return;
+  if (goblinRaid) {
+    return bot.sendMessage(msg.chat.id, 'Набег гоблинов уже идёт.', threadOpts(msg)).catch(() => {});
+  }
+
+  const goblins = new Map();
+  for (const name of GOBLIN_NAMES) {
+    const id = nextGoblinId++;
+    goblins.set(id, {
+      id,
+      name,
+      health: GOBLIN_MAX_HEALTH,
+      maxHealth: GOBLIN_MAX_HEALTH,
+      energy: GOBLIN_MAX_ENERGY,
+      coins: 3 + Math.floor(Math.random() * 8), // 3-10 inclusive
+      targetUserId: pickEligibleGoblinTarget(),
+    });
+  }
+
+  goblinRaid = {
+    goblins,
+    chatId: msg.chat.id,
+    threadId: msg.message_thread_id || null,
+    tickTimer: setInterval(goblinTick, GOBLIN_ATTACK_INTERVAL_MS),
+  };
+
+  const roster = GOBLIN_NAMES.map((name) => `⚔️ ${name} (${GOBLIN_MAX_HEALTH} ХП)`).join('\n');
+  bot.sendMessage(
+    msg.chat.id,
+    `👹 На чат напал отряд из 10 гоблинов!\n${roster}\n\nБей их: /attack <имя> или ответом на сообщение об их ударе. У каждого 3-10 монет — забираешь всё при убийстве.`,
+    threadOpts(msg)
+  ).catch(() => {});
+});
+
+// /goblins — public status listing, since goblin HP/energy otherwise
+// only ever shows up scattered across combat log messages.
+bot.onText(/\/goblins\b/i, (msg) => {
+  if (!goblinRaid) {
+    return bot.sendMessage(msg.chat.id, 'Сейчас нет набега гоблинов.', threadOpts(msg)).catch(() => {});
+  }
+  const lines = [...goblinRaid.goblins.values()].map((g) => {
+    if (g.health <= 0) return `💀 ${g.name} — мёртв`;
+    const targetText = g.targetUserId ? ` → бьёт ${labelForUserId(g.targetUserId)}` : ' → ждёт цель';
+    return `⚔️ ${g.name} — ${g.health}/${g.maxHealth} ХП, ⚡${g.energy}${targetText}`;
+  });
+  bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
+});
+
+// /attack — a warrior hits a specific goblin, either by name or by
+// replying to any message that goblin has sent (same phantom-topic-reply
+// guard as /kick/duel — see its comment there). No real weapon/accuracy
+// contest: always lands, bare-handed base damage scaled only by the
+// attacker's own strength/arm-injury, same energy/cooldown gates as /kick.
+bot.onText(/\/attack\b(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  if (!goblinRaid) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, сейчас нет набега гоблинов.`, threadOpts(msg)).catch(() => {});
+  }
+
+  let goblin = null;
+  const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
+  if (msg.reply_to_message && !isPhantomTopicReply) {
+    const goblinId = goblinMessageIds.get(msg.reply_to_message.message_id);
+    if (goblinId) goblin = goblinRaid.goblins.get(goblinId);
+  }
+  if (!goblin && match[1]) {
+    const name = match[1].trim().toLowerCase();
+    goblin = [...goblinRaid.goblins.values()].find((g) => g.name.toLowerCase() === name);
+  }
+  if (!goblin) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, укажи имя гоблина (/attack ${GOBLIN_NAMES[0]}) или ответь на его сообщение об ударе.`, threadOpts(msg)).catch(() => {});
+  }
+  if (goblin.health <= 0) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ${goblin.name} уже мёртв.`, threadOpts(msg)).catch(() => {});
+  }
+  if (!isWarrior(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, сначала стань воином: /warrior.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isHospitalized(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты лежишь в больничке — не до драки.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isKnockedOut(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какая драка!`, threadOpts(msg)).catch(() => {});
+  }
+  if (isStunned(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты оглушён — не можешь атаковать.`, threadOpts(msg)).catch(() => {});
+  }
+  const health = getUserHealth(msg.from.id);
+  if (health.energy === 0) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msg)).catch(() => {});
+  }
+  const cooldownRemaining = checkPvpCooldown(msg.from.id, 'goblin', PVP_COOLDOWN_MS);
+  if (cooldownRemaining > 0) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя бить так часто — подожди ещё ${cooldownRemaining} сек.`, threadOpts(msg)).catch(() => {});
+  }
+
+  consumeEnergy(msg.from.id);
+  const attackerStats = getStats(msg.from.id);
+  const attackerInjury = getUserInjury(msg.from.id);
+  const strengthFactor = 1 + attackerStats.strength * STRENGTH_DAMAGE_PER_POINT;
+  const armInjuryFactor = attackerInjury === 'arm' ? ARM_INJURY_DAMAGE_MULT : 1;
+  const dmg = Math.round((Math.floor(Math.random() * 20) + 1) * strengthFactor * armInjuryFactor);
+  const healthBefore = goblin.health;
+  goblin.health = Math.max(0, goblin.health - dmg);
+
+  await bot.sendMessage(
+    msg.chat.id,
+    `⚔️ ${actorLabel} бьёт ${goblin.name}! Урон: ${dmg} (${healthBefore} -> ${goblin.health})`,
+    threadOpts(msg)
+  ).catch(() => {});
+
+  if (goblin.health === 0) {
+    ensureStatsRow(msg.from.id);
+    db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(goblin.coins, msg.from.id);
+    await bot.sendMessage(msg.chat.id, `💀 ${goblin.name} повержен! ${actorLabel} забирает ${goblin.coins} монет.`, threadOpts(msg)).catch(() => {});
+    checkGoblinRaidCleared();
+  } else {
+    goblin.targetUserId = msg.from.id;
+  }
+});
+
 // /defend — voluntary 30-min self-buff trading offense for defense (see
 // docs/superpowers/specs/2026-08-24-hospital-and-defend-design.md).
 // Always succeeds once energy is paid (unlike the kuni buffs' 50/50 —
@@ -4144,6 +4374,9 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
+    '/goblinraid — (админ) наслать на чат отряд из 10 гоблинов (60 ХП, дубинка ×1, бьют раз в минуту, каждый максимум 10 раз)',
+    '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
+    '/attack <имя гоблина> (или ответом на его сообщение об ударе) — ударить гоблина; убийство — все его 3-10 монет твои; попадание по гоблину переключает его агро на тебя',
   ].join('\n');
   bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
 });
