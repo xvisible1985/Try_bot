@@ -2049,13 +2049,15 @@ bot.onText(/\/me\b/, (msg) => {
   lines.push(`🐰 В чулане провёл: ${formatDuration(liveHiddenSeconds)}`);
   lines.push(`🏃 Вне чулана: ${formatDuration(visibleSeconds)}`);
 
-  // Level is just floor(xp/100) — the same number that already drives
-  // available points (available + already-spent points always sums back
-  // to this), just surfaced directly instead of making people do the
-  // division themselves. No cap: keeps climbing as long as xp does.
-  const level = Math.floor(stats.xp / 100);
+  // Level is levelInfoForXp's own level count — the same number that
+  // already drives available points (available + already-spent points
+  // always sums back to this), just surfaced directly instead of making
+  // people do the math themselves. No cap: keeps climbing as long as xp
+  // does (see levelInfoForXp for the flat-100-then-×1.1-from-level-10
+  // cost curve).
+  const { level, nextThreshold } = levelInfoForXp(stats.xp);
   const available = level - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
-  const xpToNext = stats.xp % 100 === 0 ? 0 : 100 - (stats.xp % 100);
+  const xpToNext = nextThreshold - stats.xp;
   lines.push(`🏆 Уровень: ${level}`);
   lines.push(`📊 Точность: ${stats.accuracy} | Сила: ${stats.strength} | Ловкость: ${stats.agility} | Выносливость: ${stats.endurance}`);
   lines.push(`✨ Опыт: ${stats.xp} (ещё ${xpToNext} до следующего очка)${available > 0 ? ` — доступно очков: ${available}` : ''}`);
@@ -2173,6 +2175,33 @@ const LEVELUP_STAT_NAMES = {
 };
 const LEVELUP_STAT_LABELS = { accuracy: 'точность', strength: 'сила', agility: 'ловкость', endurance: 'выносливость' };
 
+// Per-level XP cost: flat 100 for levels 1-9, then ×1.1 compounding from
+// level 10 onward (level 10 costs 110, 11 costs 121, 12 costs 133, ...),
+// each rounded to a whole number so thresholds stay clean integers
+// instead of e.g. 133.10000000000002. Walks forward from level 0 rather
+// than inverting the compounding formula (solving for the exact level
+// via logarithms) — the forward walk is exact and immune to the
+// floating-point edge cases an inverse log/pow computation would risk
+// right at a threshold boundary, and is plenty fast since no player is
+// ever going to reach a level count where a simple loop matters.
+// Returns { level, nextThreshold }: level is how many points the given
+// xp total has fully paid for (same meaning the old flat floor(xp/100)
+// had), nextThreshold is the cumulative xp needed to reach level+1 (so
+// "xp needed" is simply nextThreshold - xp).
+function levelInfoForXp(xp) {
+  let level = 0;
+  let cumulative = 0;
+  let nextCost = 100;
+  while (true) {
+    const nextLevel = level + 1;
+    nextCost = Math.round(nextLevel <= 9 ? 100 : 100 * Math.pow(1.1, nextLevel - 9));
+    if (cumulative + nextCost > xp) break;
+    cumulative += nextCost;
+    level = nextLevel;
+  }
+  return { level, nextThreshold: cumulative + nextCost };
+}
+
 // Shared by /levelup's own text-argument path and its inline-button
 // click handler (see the callback_query branch further below) — spends
 // exactly one point on statColumn for userId, also bumping max_energy
@@ -2220,12 +2249,13 @@ bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   const arg = match[1] ? match[1].toLowerCase() : null;
   const stats = getStats(msg.from.id);
-  const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+  const { level, nextThreshold } = levelInfoForXp(stats.xp);
+  const available = level - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
 
   // No argument — offer buttons instead of making them type a name.
   if (!arg) {
     if (available <= 0) {
-      const needed = 100 - (stats.xp % 100);
+      const needed = nextThreshold - stats.xp;
       bot.sendMessage(msg.chat.id, `${actorLabel}, нет свободных очков — ещё ${needed} XP до следующего.`, threadOpts(msg)).catch(() => {});
       return;
     }
@@ -2243,7 +2273,7 @@ bot.onText(/\/levelup(?:\s+(\S+))?/i, (msg, match) => {
     return;
   }
   if (available <= 0) {
-    const needed = 100 - (stats.xp % 100);
+    const needed = nextThreshold - stats.xp;
     bot.sendMessage(msg.chat.id, `${actorLabel}, нет свободных очков — ещё ${needed} XP до следующего.`, threadOpts(msg)).catch(() => {});
     return;
   }
@@ -2343,7 +2373,7 @@ bot.onText(/\/warriors\b/i, (msg) => {
     const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
     const health = getUserHealth(user_id);
     const stats = getStats(user_id);
-    const level = Math.floor(stats.xp / 100);
+    const level = levelInfoForXp(stats.xp).level;
     const heldWeapons = getWeaponsFor('human', user_id);
     const weaponIcons = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key].emoji).join('');
     lines.push(`${level}. ${label} — ❤️ ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''}`);
@@ -4952,9 +4982,10 @@ bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const stats = getStats(userId);
-    const available = Math.floor(stats.xp / 100) - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
+    const { level: currentLevel, nextThreshold } = levelInfoForXp(stats.xp);
+    const available = currentLevel - (stats.accuracy + stats.strength + stats.agility + stats.endurance);
     if (available <= 0) {
-      const needed = 100 - (stats.xp % 100);
+      const needed = nextThreshold - stats.xp;
       await bot.editMessageText(
         `${actorLabel}, очков больше нет — ещё ${needed} XP до следующего.`,
         { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }
