@@ -308,6 +308,12 @@ try {
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN stunned_until INTEGER');
 } catch {}
+// /fuck's paralysis (see isParalyzed below and the /fuck command itself)
+// — same lazy-timestamp idiom as stunned_until, but blocks BOTH sides of
+// combat (can't attack, can't be attacked) rather than just attacking.
+try {
+  db.exec('ALTER TABLE user_health ADD COLUMN paralyzed_until INTEGER');
+} catch {}
 
 // Per-fighter combat stats. hidden_seconds accrues only when a hide
 // session definitively ends (see endHideSession) — "time NOT hidden" is
@@ -990,6 +996,15 @@ function isStunned(userId) {
   return !!row && !!row.stunned_until && row.stunned_until * 1000 > Date.now();
 }
 
+// /fuck's paralysis — same lazy-timestamp idiom as isStunned, but
+// checked on BOTH sides of every combat interaction (attacker AND
+// target, human AND goblin) since a paralyzed player can neither attack
+// nor be attacked, unlike a stun which only blocks attacking.
+function isParalyzed(userId) {
+  const row = db.prepare('SELECT paralyzed_until FROM user_health WHERE user_id = ?').get(userId);
+  return !!row && !!row.paralyzed_until && row.paralyzed_until * 1000 > Date.now();
+}
+
 function muteUser(userId, chatId, username, byId, byName, durationMs) {
   const expiresAt = durationMs ? Math.floor((Date.now() + durationMs) / 1000) : null;
   db.prepare(
@@ -1393,7 +1408,7 @@ function pickEligibleGoblinTarget() {
   const rows = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all();
   const eligible = rows
     .map((r) => r.user_id)
-    .filter((id) => !isHidden(id) && !isHospitalized(id) && getUserHealth(id).health > 0);
+    .filter((id) => !isHidden(id) && !isHospitalized(id) && !isParalyzed(id) && getUserHealth(id).health > 0);
   if (eligible.length === 0) return null;
   return eligible[Math.floor(Math.random() * eligible.length)];
 }
@@ -1483,7 +1498,7 @@ async function goblinTick() {
       goblin.targetUserId = pickEligibleGoblinTarget();
       if (!goblin.targetUserId) continue;
     }
-    if (isHidden(goblin.targetUserId) || isHospitalized(goblin.targetUserId) || getUserHealth(goblin.targetUserId).health === 0) {
+    if (isHidden(goblin.targetUserId) || isHospitalized(goblin.targetUserId) || isParalyzed(goblin.targetUserId) || getUserHealth(goblin.targetUserId).health === 0) {
       continue; // waits for its locked target to become reachable again, never re-targets on its own
     }
     goblin.energy -= 1;
@@ -2704,6 +2719,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     bot.sendMessage(chatId, `${targetLabel} лежит в больничке — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
+  if (isParalyzed(target.id)) {
+    bot.sendMessage(chatId, `${targetLabel} парализован(а) после /fuck — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
 
   const attackerHealth = getUserHealth(attacker.id);
   // Only reached when больничка couldn't be paid for on the way in (see
@@ -2731,6 +2750,12 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     const stunRow = db.prepare('SELECT stunned_until FROM user_health WHERE user_id = ?').get(attacker.id);
     const minutesLeft = Math.ceil((stunRow.stunned_until * 1000 - Date.now()) / 60000);
     bot.sendMessage(chatId, `${actorLabel}, ты оглушён битой — не можешь атаковать ещё ${minutesLeft} мин.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (isParalyzed(attacker.id)) {
+    const paralyzedRow = db.prepare('SELECT paralyzed_until FROM user_health WHERE user_id = ?').get(attacker.id);
+    const minutesLeft = Math.ceil((paralyzedRow.paralyzed_until * 1000 - Date.now()) / 60000);
+    bot.sendMessage(chatId, `${actorLabel}, ты парализован(а) после /fuck — не можешь атаковать ещё ${minutesLeft} мин.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
   if (attackerHealth.energy === 0) {
@@ -3350,6 +3375,109 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
   ).catch(() => {});
 });
 
+// /fuck — a warrior attempts to have sex with an opponent: 40% success,
+// costs 3 energy regardless of outcome. On success the victim gets a
+// 1-hour paralysis (see isParalyzed) — locked out of combat entirely in
+// both directions (can't attack, can't be attacked), unlike a stun which
+// only blocks attacking. Confined to "Поединки" and gated the same way
+// as /kick (both sides must be warriors, respects duel exclusivity,
+// target can't already be hidden/hospitalized/paralyzed) — same target
+// resolution as /kick/duel, including the phantom-topic-reply guard.
+const FUCK_ENERGY_COST = 3;
+const FUCK_SUCCESS_CHANCE = 0.4;
+const FUCK_PARALYSIS_SECONDS = 60 * 60;
+bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  if (msg.chat.id !== ARENA_CHAT_ID) {
+    return bot.sendMessage(msg.chat.id, 'Это разрешено только в чате «Поединки».', threadOpts(msg)).catch(() => {});
+  }
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  let target = null;
+  const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
+  if (msg.reply_to_message && msg.reply_to_message.from && !isPhantomTopicReply) {
+    target = {
+      id: msg.reply_to_message.from.id,
+      username: msg.reply_to_message.from.username,
+      firstName: msg.reply_to_message.from.first_name,
+    };
+  } else if (match[1]) {
+    const handle = match[1].replace(/^@/, '');
+    try {
+      const chat = await bot.getChat('@' + handle);
+      target = { id: chat.id, username: chat.username, firstName: chat.first_name };
+    } catch {}
+  }
+  if (!target) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, укажи @юзернейм или ответь на сообщение того, кого хочешь трахнуть.`, threadOpts(msg)).catch(() => {});
+  }
+  const targetLabel = target.username ? `@${target.username}` : target.firstName;
+
+  if (target.id === msg.from.id) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, себя-то зачем?`, threadOpts(msg)).catch(() => {});
+  }
+  if (!isWarrior(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, сначала стань воином: /warrior.`, threadOpts(msg)).catch(() => {});
+  }
+  if (!isWarrior(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} ещё не воин — его нельзя трогать.`, threadOpts(msg)).catch(() => {});
+  }
+
+  const attackerDuel = activeDuels.get(msg.from.id);
+  if (attackerDuel && getDuelOpponentId(attackerDuel, msg.from.id) !== target.id) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты сейчас на дуэли с ${getDuelOpponentLabel(attackerDuel, msg.from.id)} — занимайся только им, пока дуэль не закончится.`, threadOpts(msg)).catch(() => {});
+  }
+  const targetDuel = activeDuels.get(target.id);
+  if (targetDuel && getDuelOpponentId(targetDuel, target.id) !== msg.from.id) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} сейчас на дуэли — нельзя вмешиваться.`, threadOpts(msg)).catch(() => {});
+  }
+
+  if (isHidden(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} прячется в чулане — недоступен(на).`, threadOpts(msg)).catch(() => {});
+  }
+  if (isHospitalized(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} лежит в больничке — недоступен(на).`, threadOpts(msg)).catch(() => {});
+  }
+  if (isParalyzed(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} уже парализован(а) — недоступен(на).`, threadOpts(msg)).catch(() => {});
+  }
+  if (isKnockedOut(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, твоя в отключке, какое там.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isHospitalized(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты в больничке — не до того.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isStunned(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты оглушён(а) — не до того.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isParalyzed(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты сам(а) парализован(а) — не до того.`, threadOpts(msg)).catch(() => {});
+  }
+
+  const health = getUserHealth(msg.from.id);
+  if (health.energy < FUCK_ENERGY_COST) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии (нужно ${FUCK_ENERGY_COST}, есть ${health.energy}).`, threadOpts(msg)).catch(() => {});
+  }
+  const cooldownRemaining = checkPvpCooldown(msg.from.id, 'fuck', PVP_COOLDOWN_MS);
+  if (cooldownRemaining > 0) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, подожди ещё ${cooldownRemaining} сек.`, threadOpts(msg)).catch(() => {});
+  }
+
+  consumeEnergy(msg.from.id, FUCK_ENERGY_COST);
+
+  if (Math.random() < FUCK_SUCCESS_CHANCE) {
+    const until = Math.floor(Date.now() / 1000) + FUCK_PARALYSIS_SECONDS;
+    db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, target.id);
+    await bot.sendMessage(
+      msg.chat.id,
+      `😳 ${actorLabel} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на час — не может ни бить, ни быть избитым(ой).`,
+      threadOpts(msg)
+    ).catch(() => {});
+  } else {
+    await bot.sendMessage(msg.chat.id, `😅 ${actorLabel} пытается трахнуть ${targetLabel}, но ничего не вышло.`, threadOpts(msg)).catch(() => {});
+  }
+});
+
 // /goblinraid <уровень> — admin-only, starts a raid at one of the 4
 // preset tiers in RAID_TIERS above (defaults to 'рейд' if no tier is
 // given). Goblin/orc counts are each rolled independently within that
@@ -3453,6 +3581,12 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
     const stunRow = db.prepare('SELECT stunned_until FROM user_health WHERE user_id = ?').get(attacker.id);
     const minutesLeft = Math.ceil((stunRow.stunned_until * 1000 - Date.now()) / 60000);
     bot.sendMessage(chatId, `${actorLabel}, ты оглушён битой — не можешь атаковать ещё ${minutesLeft} мин.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  if (isParalyzed(attacker.id)) {
+    const paralyzedRow = db.prepare('SELECT paralyzed_until FROM user_health WHERE user_id = ?').get(attacker.id);
+    const minutesLeft = Math.ceil((paralyzedRow.paralyzed_until * 1000 - Date.now()) / 60000);
+    bot.sendMessage(chatId, `${actorLabel}, ты парализован(а) после /fuck — не можешь атаковать ещё ${minutesLeft} мин.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
   if (attackerHealth.energy === 0) {
@@ -4655,6 +4789,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
+    '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% шанс, тратит 3 энергии в любом случае; успех — жертва получает оргазм и парализована на час (не может ни бить, ни быть избитой), провал — просто сообщение',
     '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick), максимум 10 ударов каждый. Плюс автонабеги: каждое утро в случайный момент 08:00-12:00 сама выходит разведка (15 минут — не зачистили, оставшиеся сбегают), а после обеда в 13:00-18:00 либо усиленная разведка ×1.5 (если утреннюю зачистили, 10 минут), либо рейд без ограничения по времени (если кто-то сбежал)',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
