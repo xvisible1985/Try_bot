@@ -3161,18 +3161,30 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
   ).catch(() => {});
 });
 
-// /goblinraid — admin-only, starts a goblin raid (see goblinRaid state
-// and goblinTick above). Refuses if one's already running rather than
-// spawning a second overlapping wave.
-bot.onText(/\/goblinraid\b/i, async (msg) => {
+// /goblinraid [число] — admin-only, starts a goblin raid of that many
+// goblins (default 10, capped at 50 so a fat-fingered huge number can't
+// flood the chat with a roster wall or spawn something goblinTick can't
+// reasonably chew through). Beyond GOBLIN_NAMES' own 10 entries, names
+// cycle with a numeric suffix (11th is the 1st name again + " 2", etc.).
+// Refuses if a raid's already running rather than spawning a second
+// overlapping wave.
+bot.onText(/\/goblinraid\b(?:\s+(\d+))?/i, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   if (!(await isAdmin(msg))) return;
   if (goblinRaid) {
     return bot.sendMessage(msg.chat.id, 'Набег гоблинов уже идёт.', threadOpts(msg)).catch(() => {});
   }
+  const count = match[1] ? Math.min(50, Math.max(1, parseInt(match[1], 10))) : GOBLIN_NAMES.length;
+
+  const names = [];
+  for (let i = 0; i < count; i++) {
+    const base = GOBLIN_NAMES[i % GOBLIN_NAMES.length];
+    const cycle = Math.floor(i / GOBLIN_NAMES.length) + 1;
+    names.push(cycle > 1 ? `${base} ${cycle}` : base);
+  }
 
   const goblins = new Map();
-  for (const name of GOBLIN_NAMES) {
+  for (const name of names) {
     const id = nextGoblinId++;
     goblins.set(id, {
       id,
@@ -3192,10 +3204,10 @@ bot.onText(/\/goblinraid\b/i, async (msg) => {
     tickTimer: setInterval(goblinTick, GOBLIN_ATTACK_INTERVAL_MS),
   };
 
-  const roster = GOBLIN_NAMES.map((name) => `⚔️ ${name} (${GOBLIN_MAX_HEALTH} ХП)`).join('\n');
+  const roster = names.map((name) => `⚔️ ${name} (${GOBLIN_MAX_HEALTH} ХП)`).join('\n');
   bot.sendMessage(
     msg.chat.id,
-    `👹 На чат напал отряд из 10 гоблинов!\n${roster}\n\nБей их: /attack <имя> или ответом на сообщение об их ударе. У каждого 3-10 монет — забираешь всё при убийстве.`,
+    `👹 На чат напал отряд из ${count} гоблинов!\n${roster}\n\nБей их: /attack <имя> или ответом на сообщение об их ударе. У каждого 3-10 монет — забираешь всё при убийстве.`,
     threadOpts(msg)
   ).catch(() => {});
 });
@@ -4374,7 +4386,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
-    '/goblinraid — (админ) наслать на чат отряд из 10 гоблинов (60 ХП, дубинка ×1, бьют раз в минуту, каждый максимум 10 раз)',
+    '/goblinraid [число] — (админ) наслать на чат отряд гоблинов, по умолчанию 10 (макс. 50); у каждого 60 ХП, дубинка ×1, бьёт раз в минуту, максимум 10 раз',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/attack <имя гоблина> (или ответом на его сообщение об ударе) — ударить гоблина; убийство — все его 3-10 монет твои; попадание по гоблину переключает его агро на тебя',
   ].join('\n');
