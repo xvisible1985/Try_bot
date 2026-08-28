@@ -1282,23 +1282,37 @@ function getDuelOpponentLabel(duel, userId) {
 }
 // Clears the timeout (whichever one is currently pending — the 5-minute
 // timer if this is a death, already fired if this is the timeout itself)
-// and removes the duel from both participants at once before announcing
-// the result, so neither side can land one more "in-duel" hit on a
-// duel that's technically already over.
-function endDuel(duel, message) {
+// and removes the duel from both participants at once before paying out
+// and announcing the result, so neither side can land one more "in-duel"
+// hit on a duel that's technically already over. winnerId is who gets
+// the full bank (both stakes); pass null for a draw, which refunds each
+// participant their own stake instead. No-op coin-wise whenever
+// duel.stake is 0 (no wager was placed).
+function endDuel(duel, message, winnerId) {
   clearTimeout(duel.timer);
   activeDuels.delete(duel.aId);
   activeDuels.delete(duel.bId);
+  if (duel.stake > 0) {
+    if (winnerId) {
+      db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(duel.stake * 2, winnerId);
+    } else {
+      db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(duel.stake, duel.aId);
+      db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(duel.stake, duel.bId);
+    }
+  }
   bot.sendMessage(duel.chatId, message, duel.threadId ? { message_thread_id: duel.threadId } : {}).catch(() => {});
 }
 function resolveDuelTimeout(duel) {
   const aHealth = getUserHealth(duel.aId).health;
   const bHealth = getUserHealth(duel.bId).health;
-  let resultMsg;
-  if (aHealth > bHealth) resultMsg = `⏱️ Время дуэли вышло! Побеждает ${duel.aLabel} (${aHealth} ХП против ${bHealth}).`;
-  else if (bHealth > aHealth) resultMsg = `⏱️ Время дуэли вышло! Побеждает ${duel.bLabel} (${bHealth} ХП против ${aHealth}).`;
-  else resultMsg = `⏱️ Время дуэли вышло! Ничья — у обоих по ${aHealth} ХП.`;
-  endDuel(duel, resultMsg);
+  const bankText = duel.stake > 0 ? ` Банк ${duel.stake * 2} монет — победителю.` : '';
+  if (aHealth > bHealth) {
+    endDuel(duel, `⏱️ Время дуэли вышло! Побеждает ${duel.aLabel} (${aHealth} ХП против ${bHealth}).${bankText}`, duel.aId);
+  } else if (bHealth > aHealth) {
+    endDuel(duel, `⏱️ Время дуэли вышло! Побеждает ${duel.bLabel} (${bHealth} ХП против ${aHealth}).${bankText}`, duel.bId);
+  } else {
+    endDuel(duel, `⏱️ Время дуэли вышло! Ничья — у обоих по ${aHealth} ХП.${duel.stake > 0 ? ' Ставки возвращены.' : ''}`, null);
+  }
 }
 
 // Static per-weapon flavor/multiplier for the three real, stealable
@@ -2818,7 +2832,8 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   // the last word on this exchange.
   const finishedDuel = activeDuels.get(attacker.id);
   if (targetHealthAfter === 0 && finishedDuel && getDuelOpponentId(finishedDuel, attacker.id) === target.id) {
-    endDuel(finishedDuel, `⚔️🏆 Дуэль окончена! ${actorLabel} добивает ${targetLabel} и побеждает!`);
+    const bankText = finishedDuel.stake > 0 ? ` Банк ${finishedDuel.stake * 2} монет забирает победитель!` : '';
+    endDuel(finishedDuel, `⚔️🏆 Дуэль окончена! ${actorLabel} добивает ${targetLabel} и побеждает!${bankText}`, attacker.id);
   }
 }
 
@@ -2869,9 +2884,24 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
 // plain "/duel @username" posted fresh in "Поединки" would otherwise get
 // its target silently overridden by Telegram's own auto-reply-to-topic-
 // root quirk.
-bot.onText(/\/duel\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+// Args accept the target and an optional coin stake in either order
+// ("@user 100" or "100 @user"), so it's parsed as free-form tokens rather
+// than baked into the regex itself — a bare numeric token is unambiguous
+// either way, since Telegram usernames can never be all-digits.
+bot.onText(/\/duel\b(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  const tokens = (match[1] || '').trim().split(/\s+/).filter(Boolean);
+  let handle = null;
+  let stakeAmount = 0;
+  for (const token of tokens) {
+    if (/^\d+$/.test(token)) {
+      stakeAmount = parseInt(token, 10);
+    } else if (!handle) {
+      handle = token.replace(/^@/, '');
+    }
+  }
 
   let target = null;
   const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
@@ -2881,15 +2911,14 @@ bot.onText(/\/duel\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
       username: msg.reply_to_message.from.username,
       firstName: msg.reply_to_message.from.first_name,
     };
-  } else if (match[1]) {
-    const handle = match[1].replace(/^@/, '');
+  } else if (handle) {
     try {
       const chat = await bot.getChat('@' + handle);
       target = { id: chat.id, username: chat.username, firstName: chat.first_name };
     } catch {}
   }
   if (!target) {
-    return bot.sendMessage(msg.chat.id, `${actorLabel}, укажи @юзернейм или ответь на сообщение того, кого вызываешь.`, threadOpts(msg)).catch(() => {});
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, укажи @юзернейм (и, если хочешь, ставку монет) или ответь на сообщение того, кого вызываешь.`, threadOpts(msg)).catch(() => {});
   }
   const targetLabel = target.username ? `@${target.username}` : target.firstName;
 
@@ -2928,9 +2957,24 @@ bot.onText(/\/duel\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     return bot.sendMessage(msg.chat.id, `${targetLabel} не в состоянии драться — сначала долечится.`, threadOpts(msg)).catch(() => {});
   }
 
+  // Escrow the challenger's stake right now, before the challenge even
+  // goes out — refunded on decline/expiry/cancellation (see the timer
+  // below and /duelaccept's own failure paths), paid out in full (both
+  // sides' stakes) to whoever wins once the duel actually ends.
+  if (stakeAmount > 0) {
+    ensureStatsRow(msg.from.id);
+    const paid = db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ? AND coins >= ? RETURNING coins').get(stakeAmount, msg.from.id, stakeAmount);
+    if (!paid) {
+      return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает монет на ставку ${stakeAmount} — глянь /wallet.`, threadOpts(msg)).catch(() => {});
+    }
+  }
+
   const timer = setTimeout(() => {
     pendingDuels.delete(target.id);
-    bot.sendMessage(msg.chat.id, `⌛ Вызов на дуэль от ${actorLabel} к ${targetLabel} истёк.`, threadOpts(msg)).catch(() => {});
+    if (stakeAmount > 0) {
+      db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(stakeAmount, msg.from.id);
+    }
+    bot.sendMessage(msg.chat.id, `⌛ Вызов на дуэль от ${actorLabel} к ${targetLabel} истёк.${stakeAmount > 0 ? ' Ставка возвращена.' : ''}`, threadOpts(msg)).catch(() => {});
   }, DUEL_CHALLENGE_EXPIRY_MS);
 
   pendingDuels.set(target.id, {
@@ -2939,12 +2983,14 @@ bot.onText(/\/duel\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     targetLabel,
     chatId: msg.chat.id,
     threadId: msg.message_thread_id || null,
+    stake: stakeAmount,
     timer,
   });
 
+  const stakeText = stakeAmount > 0 ? ` На кону ${stakeAmount} монет с каждого — победитель заберёт весь банк (${stakeAmount * 2}).` : '';
   bot.sendMessage(
     msg.chat.id,
-    `⚔️ ${actorLabel} вызывает ${targetLabel} на дуэль 1 на 1! Пока она идёт — никто третий не может атаковать вас, и вы не можете атаковать никого другого, эликсиры тоже под запретом. Конец — либо чья-то смерть, либо 5 минут (тогда победа за тем, у кого больше HP). ${targetLabel}, 2 минуты, чтобы принять: /duelaccept`,
+    `⚔️ ${actorLabel} вызывает ${targetLabel} на дуэль 1 на 1!${stakeText} Пока она идёт — никто третий не может атаковать вас, и вы не можете атаковать никого другого, эликсиры тоже под запретом. Конец — либо чья-то смерть, либо 5 минут (тогда победа за тем, у кого больше HP). ${targetLabel}, 2 минуты, чтобы принять: /duelaccept`,
     threadOpts(msg)
   ).catch(() => {});
 });
@@ -2964,11 +3010,30 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
   clearTimeout(pending.timer);
   pendingDuels.delete(msg.from.id);
 
+  // From here on, any early return is a cancellation (not a "try again
+  // later" — the pending slot above is already gone), so the
+  // challenger's escrowed stake has to come back to them right here.
+  const refundChallenger = () => {
+    if (pending.stake > 0) {
+      db.prepare('UPDATE pvp_stats SET coins = coins + ? WHERE user_id = ?').run(pending.stake, pending.challengerId);
+    }
+  };
+
   if (activeDuels.has(pending.challengerId) || activeDuels.has(msg.from.id)) {
-    return bot.sendMessage(msg.chat.id, `${actorLabel}, один из вас уже успел ввязаться в другую дуэль — вызов отменён.`, threadOpts(msg)).catch(() => {});
+    refundChallenger();
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, один из вас уже успел ввязаться в другую дуэль — вызов отменён.${pending.stake > 0 ? ' Ставка возвращена.' : ''}`, threadOpts(msg)).catch(() => {});
   }
   if (isHospitalized(pending.challengerId) || isKnockedOut(pending.challengerId) || isHospitalized(msg.from.id) || isKnockedOut(msg.from.id)) {
-    return bot.sendMessage(msg.chat.id, `${actorLabel}, кто-то из вас сейчас не в состоянии драться — вызов отменён.`, threadOpts(msg)).catch(() => {});
+    refundChallenger();
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, кто-то из вас сейчас не в состоянии драться — вызов отменён.${pending.stake > 0 ? ' Ставка возвращена.' : ''}`, threadOpts(msg)).catch(() => {});
+  }
+  if (pending.stake > 0) {
+    ensureStatsRow(msg.from.id);
+    const paid = db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ? AND coins >= ? RETURNING coins').get(pending.stake, msg.from.id, pending.stake);
+    if (!paid) {
+      refundChallenger();
+      return bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает монет на ставку ${pending.stake} — вызов отменён, ставка возвращена ${pending.challengerLabel}.`, threadOpts(msg)).catch(() => {});
+    }
   }
 
   const duel = {
@@ -2978,15 +3043,17 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
     bLabel: actorLabel,
     chatId: pending.chatId,
     threadId: pending.threadId,
+    stake: pending.stake,
     startedAt: Date.now(),
   };
   duel.timer = setTimeout(() => resolveDuelTimeout(duel), DUEL_DURATION_MS);
   activeDuels.set(duel.aId, duel);
   activeDuels.set(duel.bId, duel);
 
+  const stakeText = pending.stake > 0 ? ` На кону ${pending.stake * 2} монет (по ${pending.stake} с каждого).` : '';
   bot.sendMessage(
     pending.chatId,
-    `⚔️✅ ${actorLabel} принимает вызов! Дуэль между ${pending.challengerLabel} и ${actorLabel} началась — 5 минут, до смерти или до сравнения HP.`,
+    `⚔️✅ ${actorLabel} принимает вызов! Дуэль между ${pending.challengerLabel} и ${actorLabel} началась — 5 минут, до смерти или до сравнения HP.${stakeText}`,
     pending.threadId ? { message_thread_id: pending.threadId } : {}
   ).catch(() => {});
 });
@@ -4074,6 +4141,9 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/defend — встать в защитную стойку на 30 мин: +25 к увороту, −40% входящего урона (только обычный урон, не нат.100/жопу морковкой); атака снимает стойку; тратит 2 энергии, кулдаун = сама стойка',
+    '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; что внутри — секрет до правильной угадки',
+    '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
+    '/duelaccept — принять вызов на дуэль (см. /duel)',
   ].join('\n');
   bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
 });
