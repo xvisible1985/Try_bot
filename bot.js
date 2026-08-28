@@ -1590,7 +1590,16 @@ const WEAPON_DEFS = {
   scissors: { name: 'ножницы', instrumental: 'ножницами', accusative: 'ножницы', multiplier: 1.25, emoji: '✂️' },
   crutch: { name: 'костыль', instrumental: 'костылём', accusative: 'костыль', multiplier: 1.25, emoji: '🩼' },
   horns: { name: 'рога', instrumental: 'рогами', accusative: 'рога', multiplier: 2, emoji: '🐂' },
-  carrot: { name: 'морковка', instrumental: 'морковкой', accusative: 'морковку', emoji: '🥕' },
+  // multiplier: 1 is a flat fallback, never used by performKick's own
+  // carrot branch (it computes each hole's damage itself) — but
+  // performKickGoblin (fighting a goblin/orc) skips carrot's holes
+  // entirely and always reads weapon.multiplier directly, so without
+  // this fallback that path computed NaN damage, which corrupted the
+  // monster's health to NaN permanently (Math.max(0, NaN) is NaN, and
+  // every later hit's subtraction from an already-NaN health stays NaN
+  // too) — same defensive reason troll-bot's own carrot copy already
+  // carries this fallback.
+  carrot: { name: 'морковка', instrumental: 'морковкой', accusative: 'морковку', multiplier: 1, emoji: '🥕' },
   // Unlike the 6 weapons above, not a weapon_ownership singleton — see
   // docs/superpowers/specs/2026-08-25-knife-multi-instance-design.md.
   // Each physical knife is its own row in owned_knives, so a player can
@@ -1609,9 +1618,10 @@ const WEAPON_DEFS = {
   // Not seeded to anyone at startup — its first owner is whoever wins the
   // /box code-guessing game (see BOX_CODE handling below); no
   // seed_username row exists for it until then. Holes mechanic mirrors
-  // carrot's (see weapon.key === 'dildo' in performKick), no multiplier
-  // used here since every hole sets its own.
-  dildo: { name: 'оранжевый дилдо', instrumental: 'оранжевым дилдо', accusative: 'оранжевый дилдо', emoji: '🍆' },
+  // carrot's (see weapon.key === 'dildo' in performKick) and sets its
+  // own damage per hole — multiplier: 1 here is the same NaN-guard
+  // fallback carrot has just above, for performKickGoblin's benefit.
+  dildo: { name: 'оранжевый дилдо', instrumental: 'оранжевым дилдо', accusative: 'оранжевый дилдо', multiplier: 1, emoji: '🍆' },
 };
 
 function getUserInjury(userId) {
@@ -3679,7 +3689,12 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
     ).catch(() => {});
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * weapon.multiplier * strengthFactor * armInjuryFactor);
+    // Defense in depth on top of every WEAPON_DEFS entry now carrying a
+    // multiplier: an undefined one here would silently turn into NaN
+    // damage, which permanently corrupts goblin.health to NaN (immortal,
+    // shows "NaN ХП" in /goblins) rather than crashing loudly — exactly
+    // what happened before carrot/dildo got their fallback multiplier.
+    const dmg = Math.round(rawDmg * (weapon.multiplier || 1) * strengthFactor * armInjuryFactor);
     goblin.health = Math.max(0, goblin.health - dmg);
     await bot.sendMessage(
       chatId,
