@@ -2136,6 +2136,20 @@ function spendLevelupPoint(userId, statColumn) {
   return db.prepare(`SELECT ${statColumn} FROM pvp_stats WHERE user_id = ?`).get(userId)[statColumn];
 }
 
+// One-off backfill for strength -> max_health: everyone who already had
+// points in strength before this feature existed gets their max_health
+// raised retroactively (+5 per point), same as if they'd spent each
+// point after the feature shipped. Current health is deliberately left
+// alone — same "raises the ceiling, doesn't top you up" rule
+// spendLevelupPoint itself follows.
+runOnce('2026-08-28-strength-max-health-backfill', () => {
+  db.exec(`
+    UPDATE user_health
+    SET max_health = max_health + 5 * (SELECT strength FROM pvp_stats WHERE pvp_stats.user_id = user_health.user_id)
+    WHERE user_id IN (SELECT user_id FROM pvp_stats WHERE strength > 0)
+  `);
+});
+
 function levelupKeyboard() {
   return {
     inline_keyboard: [
