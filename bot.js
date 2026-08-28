@@ -3204,10 +3204,14 @@ bot.onText(/\/goblinraid\b(?:\s+(\d+))?/i, async (msg, match) => {
     tickTimer: setInterval(goblinTick, GOBLIN_ATTACK_INTERVAL_MS),
   };
 
+  // Flavor label scales with the size of the wave: a couple of goblins
+  // reads as scouts, a proper wave as an attack, a big one as a
+  // full-blown invasion — purely cosmetic, doesn't change any mechanics.
+  const raidLabel = count < 3 ? 'Разведка' : count < 10 ? 'Атака' : 'Нашествие';
   const roster = names.map((name) => `⚔️ ${name} (${GOBLIN_MAX_HEALTH} ХП)`).join('\n');
   bot.sendMessage(
     msg.chat.id,
-    `👹 На чат напал отряд из ${count} гоблинов!\n${roster}\n\nБей их: /attack <имя> или ответом на сообщение об их ударе. У каждого 3-10 монет — забираешь всё при убийстве.`,
+    `👹 ${raidLabel} гоблинов! На чат напало ${count} шт.:\n${roster}\n\nБей их: /attack <имя> или ответом на сообщение об их ударе. У каждого 3-10 монет — забираешь всё при убийстве.`,
     threadOpts(msg)
   ).catch(() => {});
 });
