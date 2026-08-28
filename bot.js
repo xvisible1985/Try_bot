@@ -1261,6 +1261,46 @@ const DEFEND_DAMAGE_REDUCTION = 0.4; // incoming graduated damage ×(1 - 0.4); d
 const combatLockouts = new Map();
 const NO_HIDE_AFTER_ATTACK_MS = 20 * 60 * 1000;
 
+// 1v1 duels (see /duel and /duelaccept below). pendingDuels is keyed by
+// the CHALLENGED player's id — only one incoming challenge at a time
+// makes sense for them, and this doubles as the "already has an
+// unanswered challenge" guard. activeDuels stores the exact same duel
+// object under BOTH participants' ids, so either side's /kick can look
+// their own duel up in O(1), and ending it once (see endDuel) removes it
+// for both at the same time. Neither map needs to survive a restart —
+// same in-memory idiom as every other cooldown/lockout map here.
+const pendingDuels = new Map();
+const activeDuels = new Map();
+const DUEL_CHALLENGE_EXPIRY_MS = 2 * 60 * 1000;
+const DUEL_DURATION_MS = 5 * 60 * 1000;
+
+function getDuelOpponentId(duel, userId) {
+  return duel.aId === userId ? duel.bId : duel.aId;
+}
+function getDuelOpponentLabel(duel, userId) {
+  return duel.aId === userId ? duel.bLabel : duel.aLabel;
+}
+// Clears the timeout (whichever one is currently pending — the 5-minute
+// timer if this is a death, already fired if this is the timeout itself)
+// and removes the duel from both participants at once before announcing
+// the result, so neither side can land one more "in-duel" hit on a
+// duel that's technically already over.
+function endDuel(duel, message) {
+  clearTimeout(duel.timer);
+  activeDuels.delete(duel.aId);
+  activeDuels.delete(duel.bId);
+  bot.sendMessage(duel.chatId, message, duel.threadId ? { message_thread_id: duel.threadId } : {}).catch(() => {});
+}
+function resolveDuelTimeout(duel) {
+  const aHealth = getUserHealth(duel.aId).health;
+  const bHealth = getUserHealth(duel.bId).health;
+  let resultMsg;
+  if (aHealth > bHealth) resultMsg = `⏱️ Время дуэли вышло! Побеждает ${duel.aLabel} (${aHealth} ХП против ${bHealth}).`;
+  else if (bHealth > aHealth) resultMsg = `⏱️ Время дуэли вышло! Побеждает ${duel.bLabel} (${bHealth} ХП против ${aHealth}).`;
+  else resultMsg = `⏱️ Время дуэли вышло! Ничья — у обоих по ${aHealth} ХП.`;
+  endDuel(duel, resultMsg);
+}
+
 // Static per-weapon flavor/multiplier for the three real, stealable
 // weapons (see weapon_ownership above for who currently holds them).
 // Duplicated identically in troll-bot's bot.js — same idiom as
@@ -2143,6 +2183,9 @@ bot.onText(/\/inventory\b/i, (msg) => {
 bot.onText(/\/restore\b/i, (msg) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  if (activeDuels.has(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, эликсиры нельзя использовать во время дуэли.`, threadOpts(msg)).catch(() => {});
+  }
   const spent = db.prepare('UPDATE pvp_stats SET health_elixirs = health_elixirs - 1 WHERE user_id = ? AND health_elixirs > 0 RETURNING health_elixirs').get(msg.from.id);
   if (!spent) {
     bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя нет эликсиров здоровья — глянь /inventory.`, threadOpts(msg)).catch(() => {});
@@ -2167,6 +2210,9 @@ bot.onText(/\/restore\b/i, (msg) => {
 bot.onText(/\/recharge\b/i, (msg) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  if (activeDuels.has(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, эликсиры нельзя использовать во время дуэли.`, threadOpts(msg)).catch(() => {});
+  }
   const spent = db.prepare('UPDATE pvp_stats SET energy_elixirs = energy_elixirs - 1 WHERE user_id = ? AND energy_elixirs > 0 RETURNING energy_elixirs').get(msg.from.id);
   if (!spent) {
     bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя нет эликсиров энергии — глянь /inventory.`, threadOpts(msg)).catch(() => {});
@@ -2352,6 +2398,21 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   }
   if (!isWarrior(target.id)) {
     bot.sendMessage(chatId, `${targetLabel} ещё не воин — его нельзя атаковать, пока он не введёт /warrior.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  // Duel exclusivity (see /duel below): full mutual lock — a duelist can
+  // only hit their own opponent, and nobody outside the duel can hit
+  // either of them. Two independent checks since either side of the
+  // pairing (attacker locked into some duel, or target locked into some
+  // duel) is enough to refuse the swing on its own.
+  const attackerDuel = activeDuels.get(attacker.id);
+  if (attackerDuel && getDuelOpponentId(attackerDuel, attacker.id) !== target.id) {
+    bot.sendMessage(chatId, `${actorLabel}, ты сейчас на дуэли с ${getDuelOpponentLabel(attackerDuel, attacker.id)} — атакуй только его, пока дуэль не закончится.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
+  const targetDuel = activeDuels.get(target.id);
+  if (targetDuel && getDuelOpponentId(targetDuel, target.id) !== attacker.id) {
+    bot.sendMessage(chatId, `${targetLabel} сейчас на дуэли — нельзя вмешиваться.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
   if (isHidden(target.id)) {
@@ -2749,6 +2810,16 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       ).catch(() => {});
     }
   }
+
+  // Duel death check — if this hit landed on the attacker's own duel
+  // opponent and floored them, the duel is over right now rather than
+  // waiting for the 5-minute timer. Deliberately after the knockout/
+  // steal-offer messaging above, so the duel-end announcement reads as
+  // the last word on this exchange.
+  const finishedDuel = activeDuels.get(attacker.id);
+  if (targetHealthAfter === 0 && finishedDuel && getDuelOpponentId(finishedDuel, attacker.id) === target.id) {
+    endDuel(finishedDuel, `⚔️🏆 Дуэль окончена! ${actorLabel} добивает ${targetLabel} и побеждает!`);
+  }
 }
 
 // Target resolution: reply-to-message first, else a best-effort
@@ -2789,6 +2860,135 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
   }
 
   await performKick(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, target, slot);
+});
+
+// /duel — explicit-consent 1v1 challenge (see activeDuels/pendingDuels
+// above for the state and the mutual-lock enforcement wired into
+// performKick). Target resolution copied from /kick/give, including the
+// same phantom-topic-reply guard (see its comment on /kick above) — a
+// plain "/duel @username" posted fresh in "Поединки" would otherwise get
+// its target silently overridden by Telegram's own auto-reply-to-topic-
+// root quirk.
+bot.onText(/\/duel\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+
+  let target = null;
+  const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
+  if (msg.reply_to_message && msg.reply_to_message.from && !isPhantomTopicReply) {
+    target = {
+      id: msg.reply_to_message.from.id,
+      username: msg.reply_to_message.from.username,
+      firstName: msg.reply_to_message.from.first_name,
+    };
+  } else if (match[1]) {
+    const handle = match[1].replace(/^@/, '');
+    try {
+      const chat = await bot.getChat('@' + handle);
+      target = { id: chat.id, username: chat.username, firstName: chat.first_name };
+    } catch {}
+  }
+  if (!target) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, укажи @юзернейм или ответь на сообщение того, кого вызываешь.`, threadOpts(msg)).catch(() => {});
+  }
+  const targetLabel = target.username ? `@${target.username}` : target.firstName;
+
+  if (target.id === msg.from.id) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя вызвать на дуэль самого себя.`, threadOpts(msg)).catch(() => {});
+  }
+  if (!isWarrior(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, сначала стань воином: /warrior.`, threadOpts(msg)).catch(() => {});
+  }
+  if (!isWarrior(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} ещё не воин — его нельзя вызвать на дуэль.`, threadOpts(msg)).catch(() => {});
+  }
+  // Same "just landed a hit" lockout /hide uses — a duel is just as much
+  // a fresh commitment as ducking into the чулан right after a fight.
+  const lastAttack = combatLockouts.get(msg.from.id);
+  if (lastAttack && Date.now() - lastAttack < NO_HIDE_AFTER_ATTACK_MS) {
+    const remaining = Math.ceil((NO_HIDE_AFTER_ATTACK_MS - (Date.now() - lastAttack)) / 60000);
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, только что дрался — нельзя вызывать на дуэль ещё ${remaining} мин.`, threadOpts(msg)).catch(() => {});
+  }
+  if (activeDuels.has(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты уже на дуэли.`, threadOpts(msg)).catch(() => {});
+  }
+  if (activeDuels.has(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} сейчас на дуэли с кем-то другим.`, threadOpts(msg)).catch(() => {});
+  }
+  if (pendingDuels.has(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, у тебя уже есть неотвеченный вызов.`, threadOpts(msg)).catch(() => {});
+  }
+  if (pendingDuels.has(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} уже ждёт ответа на другой вызов.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isHospitalized(msg.from.id) || isKnockedOut(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, ты не в состоянии драться — сначала долечись.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isHospitalized(target.id) || isKnockedOut(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} не в состоянии драться — сначала долечится.`, threadOpts(msg)).catch(() => {});
+  }
+
+  const timer = setTimeout(() => {
+    pendingDuels.delete(target.id);
+    bot.sendMessage(msg.chat.id, `⌛ Вызов на дуэль от ${actorLabel} к ${targetLabel} истёк.`, threadOpts(msg)).catch(() => {});
+  }, DUEL_CHALLENGE_EXPIRY_MS);
+
+  pendingDuels.set(target.id, {
+    challengerId: msg.from.id,
+    challengerLabel: actorLabel,
+    targetLabel,
+    chatId: msg.chat.id,
+    threadId: msg.message_thread_id || null,
+    timer,
+  });
+
+  bot.sendMessage(
+    msg.chat.id,
+    `⚔️ ${actorLabel} вызывает ${targetLabel} на дуэль 1 на 1! Пока она идёт — никто третий не может атаковать вас, и вы не можете атаковать никого другого, эликсиры тоже под запретом. Конец — либо чья-то смерть, либо 5 минут (тогда победа за тем, у кого больше HP). ${targetLabel}, 2 минуты, чтобы принять: /duelaccept`,
+    threadOpts(msg)
+  ).catch(() => {});
+});
+
+// /duelaccept — the challenged player confirms /duel above. Re-checks
+// both sides can still actually fight, since up to 2 minutes can pass
+// between the challenge and this — plenty of time for either of them to
+// get knocked into another duel, hospitalized, or knocked out by someone
+// else entirely in the meantime.
+bot.onText(/\/duelaccept\b/i, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const pending = pendingDuels.get(msg.from.id);
+  if (!pending) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, тебя никто не вызывал на дуэль.`, threadOpts(msg)).catch(() => {});
+  }
+  clearTimeout(pending.timer);
+  pendingDuels.delete(msg.from.id);
+
+  if (activeDuels.has(pending.challengerId) || activeDuels.has(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, один из вас уже успел ввязаться в другую дуэль — вызов отменён.`, threadOpts(msg)).catch(() => {});
+  }
+  if (isHospitalized(pending.challengerId) || isKnockedOut(pending.challengerId) || isHospitalized(msg.from.id) || isKnockedOut(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, кто-то из вас сейчас не в состоянии драться — вызов отменён.`, threadOpts(msg)).catch(() => {});
+  }
+
+  const duel = {
+    aId: pending.challengerId,
+    aLabel: pending.challengerLabel,
+    bId: msg.from.id,
+    bLabel: actorLabel,
+    chatId: pending.chatId,
+    threadId: pending.threadId,
+    startedAt: Date.now(),
+  };
+  duel.timer = setTimeout(() => resolveDuelTimeout(duel), DUEL_DURATION_MS);
+  activeDuels.set(duel.aId, duel);
+  activeDuels.set(duel.bId, duel);
+
+  bot.sendMessage(
+    pending.chatId,
+    `⚔️✅ ${actorLabel} принимает вызов! Дуэль между ${pending.challengerLabel} и ${actorLabel} началась — 5 минут, до смерти или до сравнения HP.`,
+    pending.threadId ? { message_thread_id: pending.threadId } : {}
+  ).catch(() => {});
 });
 
 // /defend — voluntary 30-min self-buff trading offense for defense (see
