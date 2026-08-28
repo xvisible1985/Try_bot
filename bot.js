@@ -1974,6 +1974,19 @@ function getBoxCode() {
   return code;
 }
 
+const BOX_POSITION_NAMES = ['первая', 'вторая', 'третья'];
+
+// Which of the 3 digits is "jammed" (permanently visible) — rolled once
+// and persisted the same way as the code itself, so it's the same digit
+// every time someone checks, not a fresh random one per attempt.
+function getBoxRevealedPosition() {
+  const row = db.prepare("SELECT value FROM bot_settings WHERE key = 'box_revealed_position'").get();
+  if (row) return parseInt(row.value, 10);
+  const position = Math.floor(Math.random() * 3);
+  db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('box_revealed_position', ?)").run(String(position));
+  return position;
+}
+
 // Separate cooldown map from pvpCooldowns — /hide gates how often you can
 // re-trigger your OWN hiding, not how often you can attack.
 const hideCooldowns = new Map();
@@ -2462,8 +2475,15 @@ bot.onText(/\/box\s+(\d{1,3})\b/, async (msg, match) => {
   boxCooldowns.set(msg.from.id, now);
 
   const guess = match[1].padStart(3, '0');
-  if (guess !== getBoxCode()) {
-    return bot.sendMessage(msg.chat.id, `${actorLabel}, неверно.`, threadOpts(msg)).catch(() => {});
+  const code = getBoxCode();
+  if (guess !== code) {
+    const position = getBoxRevealedPosition();
+    const digit = code[position];
+    return bot.sendMessage(
+      msg.chat.id,
+      `${actorLabel}, неверно. Подсказка: заклинила ${BOX_POSITION_NAMES[position]} цифра — она = ${digit}.`,
+      threadOpts(msg)
+    ).catch(() => {});
   }
 
   // Atomic claim: guards the (rare but possible) race of two correct
@@ -4834,7 +4854,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/defend — встать в защитную стойку на 30 мин: +25 к увороту, −40% входящего урона (только обычный урон, не нат.100/жопу морковкой); атака снимает стойку; тратит 2 энергии, кулдаун = сама стойка',
-    '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; что внутри — секрет до правильной угадки',
+    '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; каждая неверная попытка показывает одну и ту же подсказку — какая по счёту цифра заклинила и чему она равна; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
     '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% шанс, тратит 2 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на час (не может ни бить, ни быть избитой), провал — просто сообщение',
