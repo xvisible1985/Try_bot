@@ -3230,17 +3230,24 @@ bot.onText(/\/goblins\b/i, (msg) => {
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
-// /attack — a warrior hits a specific goblin, either by name or by
-// replying to any message that goblin has sent (same phantom-topic-reply
-// guard as /kick/duel — see its comment there). No real weapon/accuracy
-// contest: always lands, bare-handed base damage scaled only by the
-// attacker's own strength/arm-injury, same energy/cooldown gates as /kick.
-bot.onText(/\/attack\b(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
+// /attack (or /attack1, /attack2, /attack3) — a warrior hits a specific
+// goblin, either by name or by replying to any message that goblin has
+// sent (same phantom-topic-reply guard as /kick/duel — see its comment
+// there). Weapon slot works exactly like /kick's: no number = bare
+// hands, 1/2/3 = that held real weapon by slot (see /me), falling back
+// to bare-handed if that slot is empty — same pickWeaponForAttacker used
+// everywhere else, just its flat multiplier, none of a real weapon's
+// special procs (crutch/horns/bat-stun/carrot-holes/etc. — goblins don't
+// have injuries or the other player-only resources those key off).
+// Still always lands, no accuracy contest — only the attacker's own
+// strength/arm-injury and now their weapon's multiplier scale the hit.
+bot.onText(/\/attack([1-3])?(?!\w)(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
   if (!goblinRaid) {
     return bot.sendMessage(msg.chat.id, `${actorLabel}, сейчас нет набега гоблинов.`, threadOpts(msg)).catch(() => {});
   }
+  const slot = match[1] ? parseInt(match[1], 10) : 0;
 
   let goblin = null;
   const isPhantomTopicReply = msg.reply_to_message && msg.message_thread_id && msg.reply_to_message.message_id === msg.message_thread_id;
@@ -3248,8 +3255,8 @@ bot.onText(/\/attack\b(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
     const goblinId = goblinMessageIds.get(msg.reply_to_message.message_id);
     if (goblinId) goblin = goblinRaid.goblins.get(goblinId);
   }
-  if (!goblin && match[1]) {
-    const name = match[1].trim().toLowerCase();
+  if (!goblin && match[2]) {
+    const name = match[2].trim().toLowerCase();
     goblin = [...goblinRaid.goblins.values()].find((g) => g.name.toLowerCase() === name);
   }
   if (!goblin) {
@@ -3274,9 +3281,10 @@ bot.onText(/\/attack\b(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
   if (health.energy === 0) {
     return bot.sendMessage(msg.chat.id, `${actorLabel}, нет энергии на удар — отдохни (⚡ 1 за 20 мин).`, threadOpts(msg)).catch(() => {});
   }
-  const cooldownRemaining = checkPvpCooldown(msg.from.id, 'goblin', PVP_COOLDOWN_MS);
+  const weapon = pickWeaponForAttacker('human', msg.from.id, slot, PVP_WEAPONS);
+  const cooldownRemaining = checkPvpCooldown(msg.from.id, weapon.key || 'goblin-bare', PVP_COOLDOWN_MS);
   if (cooldownRemaining > 0) {
-    return bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя бить так часто — подожди ещё ${cooldownRemaining} сек.`, threadOpts(msg)).catch(() => {});
+    return bot.sendMessage(msg.chat.id, `${actorLabel}, нельзя бить так часто ${weapon.key ? WEAPON_DEFS[weapon.key].instrumental : 'голыми руками'} — подожди ещё ${cooldownRemaining} сек.`, threadOpts(msg)).catch(() => {});
   }
 
   consumeEnergy(msg.from.id);
@@ -3284,13 +3292,13 @@ bot.onText(/\/attack\b(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
   const attackerInjury = getUserInjury(msg.from.id);
   const strengthFactor = 1 + attackerStats.strength * STRENGTH_DAMAGE_PER_POINT;
   const armInjuryFactor = attackerInjury === 'arm' ? ARM_INJURY_DAMAGE_MULT : 1;
-  const dmg = Math.round((Math.floor(Math.random() * 20) + 1) * strengthFactor * armInjuryFactor);
+  const dmg = Math.round((Math.floor(Math.random() * 20) + 1) * weapon.multiplier * strengthFactor * armInjuryFactor);
   const healthBefore = goblin.health;
   goblin.health = Math.max(0, goblin.health - dmg);
 
   await bot.sendMessage(
     msg.chat.id,
-    `⚔️ ${actorLabel} бьёт ${goblin.name}! Урон: ${dmg} (${healthBefore} -> ${goblin.health})`,
+    `⚔️ ${actorLabel} бьёт ${goblin.name} ${weapon.text}! Урон: ${dmg} (${healthBefore} -> ${goblin.health})`,
     threadOpts(msg)
   ).catch(() => {});
 
@@ -4392,7 +4400,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/duelaccept — принять вызов на дуэль (см. /duel)',
     '/goblinraid [число] — (админ) наслать на чат отряд гоблинов, по умолчанию 10 (макс. 50); у каждого 60 ХП, дубинка ×1, бьёт раз в минуту, максимум 10 раз',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
-    '/attack <имя гоблина> (или ответом на его сообщение об ударе) — ударить гоблина; убийство — все его 3-10 монет твои; попадание по гоблину переключает его агро на тебя',
+    '/attack <имя гоблина> (или ответом на его сообщение об ударе) — ударить гоблина голыми руками; /attack1, /attack2, /attack3 — конкретным оружием по номеру слота (см. /me), урон = множитель оружия, без спецэффектов оружия (травм/оглушений и т.п. у гоблинов нет); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
   bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
 });
