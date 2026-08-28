@@ -1315,38 +1315,66 @@ function resolveDuelTimeout(duel) {
   }
 }
 
-// --- Goblin raid (admin-triggered PvE event, see /goblinraid and /kick's
-// goblin branch below) ---
-// 10 goblins, 60 HP / 10 energy each, club (×1 multiplier) attack once a
-// minute, using the exact same opposed accuracy-vs-dodge PvP roll as
-// human /kick — see GOBLIN_STATS below for their fixed accuracy/
-// strength/agility/endurance (no attribute investment, no /levelup for
-// them). Each one locks onto a random eligible warrior (not hidden, not
-// hospitalized, not already at 0 HP) at spawn and stays locked on that
-// SAME target forever — it never re-rolls on its own, only ever
-// switching because a player actually landed a hit on it (see /kick's
-// goblin branch), at which point it locks onto that attacker instead. If
-// its current target becomes temporarily unreachable it just skips that
-// minute's swing rather than picking someone else. Energy caps total
-// swings at 10 — once spent, the goblin goes harmless but stays alive
-// and lootable for its coins until killed. Fighting one is done through
-// /kick itself (by name or by replying to one of its messages), not a
-// separate command — same interface as fighting a human. In-memory
-// only, same convention as activeDuels/pendingDuels — doesn't survive a
-// restart.
-const GOBLIN_NAMES = ['Грызль', 'Шнырь', 'Куцехвост', 'Плюгаш', 'Костолом', 'Гниляк', 'Хрящ', 'Дрызга', 'Мозгоглод', 'Бормотун'];
-const GOBLIN_MAX_HEALTH = 60;
-const GOBLIN_MAX_ENERGY = 10;
+// --- Goblin/orc raid (admin-triggered PvE event, see /goblinraid and
+// /kick's monster branch below) ---
+// Two monster types (see MONSTER_TYPES) attacking once a minute each,
+// using the exact same opposed accuracy-vs-dodge PvP roll as human
+// /kick — see each type's fixed accuracy/strength/agility/endurance (no
+// attribute investment, no /levelup for them). Each one locks onto a
+// random eligible warrior (not hidden, not hospitalized, not already at
+// 0 HP) at spawn and stays locked on that SAME target forever — it never
+// re-rolls on its own, only ever switching because a player actually
+// landed a hit on it (see /kick's monster branch), at which point it
+// locks onto that attacker instead. If its current target becomes
+// temporarily unreachable it just skips that minute's swing rather than
+// picking someone else. Energy caps total swings at maxEnergy — once
+// spent, it goes harmless but stays alive and lootable for its coins
+// until killed. Fighting one is done through /kick itself (by name or
+// by replying to one of its messages), not a separate command — same
+// interface as fighting a human. In-memory only, same convention as
+// activeDuels/pendingDuels — doesn't survive a restart. Despite the
+// variable/function names still saying "goblin" throughout (kept as-is
+// to avoid a sweeping rename), every one of them now handles both types
+// via the `type` field on each monster object.
+const MONSTER_TYPES = {
+  goblin: {
+    names: ['Грызль', 'Шнырь', 'Куцехвост', 'Плюгаш', 'Костолом', 'Гниляк', 'Хрящ', 'Дрызга', 'Мозгоглод', 'Бормотун'],
+    maxHealth: 60,
+    maxEnergy: 10,
+    stats: { accuracy: 3, strength: 1, agility: 5, endurance: 0 },
+    weaponText: 'дубинкой',
+    emoji: '🟢',
+  },
+  orc: {
+    names: ['Груб', 'Кровосек', 'Мясоруб', 'Клык', 'Рёва', 'Черепомёт', 'Дубина', 'Хрипун', 'Секач', 'Ломастер'],
+    maxHealth: 120,
+    maxEnergy: 10,
+    stats: { accuracy: 2, strength: 7, agility: 2, endurance: 3 },
+    weaponText: 'дубиной',
+    emoji: '🟤',
+  },
+};
+// endurance has nothing to act on for either type (no energy regen, no
+// /levelup) — kept on both stat blocks only for shape parity with a
+// player's own getStats().
 const GOBLIN_ATTACK_INTERVAL_MS = 60 * 1000;
-// Fixed, non-investable stats plugged into the same formulas as a
-// player's own getStats() — endurance has nothing to act on for a
-// goblin (no energy regen, no /levelup), kept only for shape parity.
-const GOBLIN_STATS = { accuracy: 3, strength: 1, agility: 5, endurance: 0 };
 
-let goblinRaid = null; // { goblins: Map<id, goblin>, chatId, threadId, tickTimer }
+// /goblinraid's 4 preset wave compositions — [min, max] goblin/orc counts,
+// rolled independently and inclusive on both ends.
+const RAID_TIERS = {
+  'разведка': { goblins: [2, 5], orcs: [0, 0] },
+  'рейд': { goblins: [5, 10], orcs: [0, 0] },
+  'атака': { goblins: [5, 10], orcs: [1, 2] },
+  'нашествие': { goblins: [10, 20], orcs: [2, 5] },
+};
+function randIntInclusive(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+let goblinRaid = null; // { goblins: Map<id, monster>, chatId, threadId, tickTimer }
 let nextGoblinId = 1;
 // messageId -> goblinId, so /kick can resolve its target by replying to
-// any message that goblin has sent (spawn roster or an attack line)
+// any message that monster has sent (spawn roster or an attack line)
 // instead of typing its name. Cleared whenever the raid ends.
 const goblinMessageIds = new Map();
 
@@ -1368,7 +1396,32 @@ function pickEligibleGoblinTarget() {
   return eligible[Math.floor(Math.random() * eligible.length)];
 }
 
-// Ends the raid once every goblin is dead: stops the tick, announces
+// name index within its own type's pool cycles with a numeric suffix
+// once exhausted (11th goblin is the 1st name again + " 2", etc.) — same
+// idiom /goblinraid already used before orcs existed, just per-type now.
+function monsterName(type, indexWithinType) {
+  const names = MONSTER_TYPES[type].names;
+  const base = names[indexWithinType % names.length];
+  const cycle = Math.floor(indexWithinType / names.length) + 1;
+  return cycle > 1 ? `${base} ${cycle}` : base;
+}
+
+function spawnMonster(type, indexWithinType) {
+  const def = MONSTER_TYPES[type];
+  const id = nextGoblinId++;
+  return {
+    id,
+    type,
+    name: monsterName(type, indexWithinType),
+    health: def.maxHealth,
+    maxHealth: def.maxHealth,
+    energy: def.maxEnergy,
+    coins: 3 + Math.floor(Math.random() * 8), // 3-10 inclusive
+    targetUserId: pickEligibleGoblinTarget(),
+  };
+}
+
+// Ends the raid once every monster is dead: stops the tick, announces
 // victory, and clears both module-level maps so nothing lingers for the
 // next raid.
 function checkGoblinRaidCleared() {
@@ -1376,24 +1429,25 @@ function checkGoblinRaidCleared() {
   clearInterval(goblinRaid.tickTimer);
   bot.sendMessage(
     goblinRaid.chatId,
-    '🏆 Набег гоблинов отбит — все 10 мертвы!',
+    '🏆 Набег отбит — никого не осталось!',
     goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
   ).catch(() => {});
   goblinMessageIds.clear();
   goblinRaid = null;
 }
 
-// One shared 60s tick drives every alive, still-energetic goblin's swing
+// One shared 60s tick drives every alive, still-energetic monster's swing
 // — same "one interval, iterate all live entities" idiom as
-// healthRegenTick/arenaTick rather than a per-goblin timer. Opposed roll
+// healthRegenTick/arenaTick rather than a per-monster timer. Opposed roll
 // is the exact same shape as performKick's own (attacker accuracy vs
-// defender dodge, nat-100 auto-hit, nat-0 auto-miss), just with
-// GOBLIN_STATS standing in for getStats() and no arm/leg/head injury on
-// the goblin's own side (it doesn't have any).
+// defender dodge, nat-100 auto-hit, nat-0 auto-miss), just with the
+// monster's own MONSTER_TYPES stats standing in for getStats() and no
+// arm/leg/head injury on its side (it doesn't have any).
 async function goblinTick() {
   if (!goblinRaid || isPvpPaused()) return;
   for (const goblin of goblinRaid.goblins.values()) {
     if (goblin.health <= 0 || goblin.energy <= 0) continue;
+    const def = MONSTER_TYPES[goblin.type];
     if (!goblin.targetUserId) {
       goblin.targetUserId = pickEligibleGoblinTarget();
       if (!goblin.targetUserId) continue;
@@ -1416,7 +1470,7 @@ async function goblinTick() {
     } else if (roll === 0) {
       success = false;
     } else {
-      attackerScore = roll + GOBLIN_STATS.accuracy * ACCURACY_PER_POINT;
+      attackerScore = roll + def.stats.accuracy * ACCURACY_PER_POINT;
       const dodgeBuffBonus = getHitThreshold(goblin.targetUserId) - 50;
       const defendDodgeBonus = isDefending(goblin.targetUserId) ? DEFEND_DODGE_BONUS : 0;
       const defenderRoll = Math.floor(Math.random() * 101);
@@ -1429,7 +1483,7 @@ async function goblinTick() {
     const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
     const sent = await bot.sendMessage(
       goblinRaid.chatId,
-      `🟢 ${goblin.name} бьёт ${targetLabel} дубинкой ${outcome}: ${roll}/100${scoreText}`,
+      `${def.emoji} ${goblin.name} бьёт ${targetLabel} ${def.weaponText} ${outcome}: ${roll}/100${scoreText}`,
       goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
     ).catch(() => null);
     if (sent) goblinMessageIds.set(sent.message_id, goblin.id);
@@ -1446,7 +1500,7 @@ async function goblinTick() {
         goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
       ).catch(() => {});
     } else {
-      const strengthFactor = 1 + GOBLIN_STATS.strength * STRENGTH_DAMAGE_PER_POINT;
+      const strengthFactor = 1 + def.stats.strength * STRENGTH_DAMAGE_PER_POINT;
       const rawDmg = Math.floor(Math.random() * 20) + 1;
       const dmg = Math.round(rawDmg * strengthFactor * defendFactor); // club multiplier is 1
       after = damageHuman(goblin.targetUserId, goblinRaid.chatId, null, dmg);
@@ -2066,12 +2120,18 @@ const LEVELUP_STAT_LABELS = { accuracy: 'точность', strength: 'сила'
 // Shared by /levelup's own text-argument path and its inline-button
 // click handler (see the callback_query branch further below) — spends
 // exactly one point on statColumn for userId, also bumping max_energy
-// directly for endurance specifically (see the ALTER/UPDATE idiom used
-// everywhere else in this file for that column). Returns the new value.
+// directly for endurance and max_health for strength (see the
+// ALTER/UPDATE idiom used everywhere else in this file for those
+// columns). Neither bump also tops up the current value — same
+// "raising the ceiling doesn't refill you" precedent endurance's
+// max_energy bump already set. Returns the new value.
 function spendLevelupPoint(userId, statColumn) {
   db.prepare(`UPDATE pvp_stats SET ${statColumn} = ${statColumn} + 1 WHERE user_id = ?`).run(userId);
   if (statColumn === 'endurance') {
     db.prepare('UPDATE user_health SET max_energy = max_energy + 1 WHERE user_id = ?').run(userId);
+  }
+  if (statColumn === 'strength') {
+    db.prepare('UPDATE user_health SET max_health = max_health + 5 WHERE user_id = ?').run(userId);
   }
   return db.prepare(`SELECT ${statColumn} FROM pvp_stats WHERE user_id = ?`).get(userId)[statColumn];
 }
@@ -3245,40 +3305,34 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
   ).catch(() => {});
 });
 
-// /goblinraid [число] — admin-only, starts a goblin raid of that many
-// goblins (default 10, capped at 50 so a fat-fingered huge number can't
-// flood the chat with a roster wall or spawn something goblinTick can't
-// reasonably chew through). Beyond GOBLIN_NAMES' own 10 entries, names
-// cycle with a numeric suffix (11th is the 1st name again + " 2", etc.).
-// Refuses if a raid's already running rather than spawning a second
-// overlapping wave.
-bot.onText(/\/goblinraid\b(?:\s+(\d+))?/i, async (msg, match) => {
+// /goblinraid <уровень> — admin-only, starts a raid at one of the 4
+// preset tiers in RAID_TIERS above (defaults to 'рейд' if no tier is
+// given). Goblin/orc counts are each rolled independently within that
+// tier's [min, max] range. Refuses if a raid's already running rather
+// than spawning a second overlapping wave.
+bot.onText(/\/goblinraid\b(?:\s+(\S+))?/i, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   if (!(await isAdmin(msg))) return;
   if (goblinRaid) {
-    return bot.sendMessage(msg.chat.id, 'Набег гоблинов уже идёт.', threadOpts(msg)).catch(() => {});
+    return bot.sendMessage(msg.chat.id, 'Набег уже идёт.', threadOpts(msg)).catch(() => {});
   }
-  const count = match[1] ? Math.min(50, Math.max(1, parseInt(match[1], 10))) : GOBLIN_NAMES.length;
+  const tierName = (match[1] || 'рейд').toLowerCase();
+  const tier = RAID_TIERS[tierName];
+  if (!tier) {
+    return bot.sendMessage(msg.chat.id, `Неизвестный уровень набега. Варианты: ${Object.keys(RAID_TIERS).join(', ')}.`, threadOpts(msg)).catch(() => {});
+  }
 
-  const names = [];
-  for (let i = 0; i < count; i++) {
-    const base = GOBLIN_NAMES[i % GOBLIN_NAMES.length];
-    const cycle = Math.floor(i / GOBLIN_NAMES.length) + 1;
-    names.push(cycle > 1 ? `${base} ${cycle}` : base);
-  }
+  const goblinCount = randIntInclusive(tier.goblins[0], tier.goblins[1]);
+  const orcCount = randIntInclusive(tier.orcs[0], tier.orcs[1]);
 
   const goblins = new Map();
-  for (const name of names) {
-    const id = nextGoblinId++;
-    goblins.set(id, {
-      id,
-      name,
-      health: GOBLIN_MAX_HEALTH,
-      maxHealth: GOBLIN_MAX_HEALTH,
-      energy: GOBLIN_MAX_ENERGY,
-      coins: 3 + Math.floor(Math.random() * 8), // 3-10 inclusive
-      targetUserId: pickEligibleGoblinTarget(),
-    });
+  for (let i = 0; i < goblinCount; i++) {
+    const m = spawnMonster('goblin', i);
+    goblins.set(m.id, m);
+  }
+  for (let i = 0; i < orcCount; i++) {
+    const m = spawnMonster('orc', i);
+    goblins.set(m.id, m);
   }
 
   goblinRaid = {
@@ -3288,14 +3342,12 @@ bot.onText(/\/goblinraid\b(?:\s+(\d+))?/i, async (msg, match) => {
     tickTimer: setInterval(goblinTick, GOBLIN_ATTACK_INTERVAL_MS),
   };
 
-  // Flavor label scales with the size of the wave: a couple of goblins
-  // reads as scouts, a proper wave as an attack, a big one as a
-  // full-blown invasion — purely cosmetic, doesn't change any mechanics.
-  const raidLabel = count < 3 ? 'Разведка' : count < 10 ? 'Атака' : 'Нашествие';
-  const roster = names.map((name) => `⚔️ ${name} (${GOBLIN_MAX_HEALTH} ХП)`).join('\n');
+  const raidLabel = tierName.charAt(0).toUpperCase() + tierName.slice(1);
+  const roster = [...goblins.values()].map((m) => `${MONSTER_TYPES[m.type].emoji} ${m.name} (${m.maxHealth} ХП)`).join('\n');
+  const summary = orcCount > 0 ? `${goblinCount} гоблинов и ${orcCount} орков` : `${goblinCount} гоблинов`;
   bot.sendMessage(
     msg.chat.id,
-    `👹 ${raidLabel} гоблинов! На чат напало ${count} шт.:\n${roster}\n\nБей их через /kick <имя> (или ответом на сообщение об их ударе) — так же, как обычного игрока: те же шансы попасть/увернуться и то же оружие. У каждого 3-10 монет — забираешь всё при убийстве.`,
+    `👹 ${raidLabel}! На чат напало: ${summary}:\n${roster}\n\nБей их через /kick <имя> (или ответом на сообщение об их ударе) — так же, как обычного игрока: те же шансы попасть/увернуться и то же оружие. У каждого 3-10 монет — забираешь всё при убийстве.`,
     threadOpts(msg)
   ).catch(() => {});
 });
@@ -3304,22 +3356,24 @@ bot.onText(/\/goblinraid\b(?:\s+(\d+))?/i, async (msg, match) => {
 // only ever shows up scattered across combat log messages.
 bot.onText(/\/goblins\b/i, (msg) => {
   if (!goblinRaid) {
-    return bot.sendMessage(msg.chat.id, 'Сейчас нет набега гоблинов.', threadOpts(msg)).catch(() => {});
+    return bot.sendMessage(msg.chat.id, 'Сейчас нет набега.', threadOpts(msg)).catch(() => {});
   }
   const lines = [...goblinRaid.goblins.values()].map((g) => {
     if (g.health <= 0) return `💀 ${g.name} — мёртв`;
+    const emoji = MONSTER_TYPES[g.type].emoji;
     const targetText = g.targetUserId ? ` → бьёт ${labelForUserId(g.targetUserId)}` : ' → ждёт цель';
-    return `⚔️ ${g.name} — ${g.health}/${g.maxHealth} ХП, ⚡${g.energy}${targetText}`;
+    return `${emoji} ${g.name} — ${g.health}/${g.maxHealth} ХП, ⚡${g.energy}${targetText}`;
   });
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
-// Fighting a goblin goes through /kick itself (see its onText handler
-// below, which routes here instead of performKick when the resolved
-// target is a goblin rather than a human) — same command, same weapon
-// slots, same opposed accuracy-vs-dodge roll as human PvP, just against
-// GOBLIN_STATS instead of a real user's getStats(). No arm/leg/head
-// injury on the goblin's own side (it doesn't have any), so no crit-
+// Fighting a goblin or orc goes through /kick itself (see its onText
+// handler below, which routes here instead of performKick when the
+// resolved target is a monster rather than a human) — same command,
+// same weapon slots, same opposed accuracy-vs-dodge roll as human PvP,
+// just against that monster's own MONSTER_TYPES stats instead of a real
+// user's getStats(). No arm/leg/head injury on the monster's own side
+// (it doesn't have any), so no crit-
 // injury infliction and none of a real weapon's other human-only procs
 // (crutch/horns/bat-stun/carrot-holes/knuckles-headshot/etc. all write
 // to user_health columns a goblin doesn't have) — only the weapon's flat
@@ -3327,6 +3381,7 @@ bot.onText(/\/goblins\b/i, (msg) => {
 // full, same as fighting a human.
 async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
   const actorLabel = attacker.username ? `@${attacker.username}` : attacker.firstName;
+  const monsterDef = MONSTER_TYPES[goblin.type];
 
   if (goblin.health <= 0) {
     bot.sendMessage(chatId, `${actorLabel}, ${goblin.name} уже мёртв.`, threadOpts(msgLike)).catch(() => {});
@@ -3400,7 +3455,7 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
   } else {
     attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
     const defenderRoll = Math.floor(Math.random() * 101);
-    defenderScore = defenderRoll + GOBLIN_STATS.agility * AGILITY_DODGE_PER_POINT;
+    defenderScore = defenderRoll + monsterDef.stats.agility * AGILITY_DODGE_PER_POINT;
     success = attackerScore > defenderScore;
     dodged = !success;
   }
@@ -4547,7 +4602,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 20-180 минут (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup; во время набега гоблинов (/goblinraid) им можно бить и их — см. /goblins)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/find — список всех бойцов: 🏥 сначала те, кто в больничке, затем 🐰 те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
-    '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100)',
+    '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (1 очко = каждые 100 опыта; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100); сила также даёт +5 к максимуму ХП за очко, выносливость — +1 к максимуму энергии за очко',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniTama — попытка получить бафф +25% крит и +25% уклонение, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
@@ -4555,7 +4610,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
-    '/goblinraid [число] — (админ) наслать на чат отряд гоблинов, по умолчанию 10 (макс. 50); у каждого 60 ХП, дубинка ×1, точность 3, уворот 5, сила 1; бьёт раз в минуту (та же формула попадания/уворота, что и у /kick), максимум 10 раз',
+    '/goblinraid [уровень] — (админ) наслать набег, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick), максимум 10 ударов каждый',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
