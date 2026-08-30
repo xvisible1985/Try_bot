@@ -1505,16 +1505,17 @@ async function goblinTick() {
     const targetLabel = labelForUserId(goblin.targetUserId);
 
     // 10% chance this swing is a /fuck attempt instead of a normal hit —
-    // same 40%-success/1h-paralysis mechanic as the player command,
-    // spending this goblin's turn (and its energy, already deducted
-    // above) either way instead of rolling the usual accuracy-vs-dodge
-    // attack below.
+    // same 40%-success/10-40-min-paralysis mechanic as the player
+    // command, spending this goblin's turn (and its energy, already
+    // deducted above) either way instead of rolling the usual
+    // accuracy-vs-dodge attack below.
     if (Math.random() < 0.1) {
       let fuckMessage;
       if (Math.random() < FUCK_SUCCESS_CHANCE) {
-        const until = Math.floor(Date.now() / 1000) + FUCK_PARALYSIS_SECONDS;
+        const paralysisMinutes = rollFuckParalysisMinutes();
+        const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
         db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, goblin.targetUserId);
-        fuckMessage = `😳 ${goblin.name} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на час — не может ни бить, ни быть избитым(ой).`;
+        fuckMessage = `😳 ${goblin.name} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на ${paralysisMinutes} мин — не может ни бить, ни быть избитым(ой).`;
       } else {
         fuckMessage = `😅 ${goblin.name} пытается трахнуть ${targetLabel}, но ничего не вышло.`;
       }
@@ -2393,10 +2394,15 @@ bot.onText(/\/wallet\b/i, (msg) => {
   bot.sendMessage(msg.chat.id, `🪙 ${actorLabel}, у тебя в кошельке: ${coins} монет.`, threadOpts(msg)).catch(() => {});
 });
 
-// /warriors — roster of everyone who's registered via /warrior, sorted
-// by xp (highest first — the same value level is derived from). Each
-// line: display name, health, held real weapon(s) by emoji (blank if
-// none), level.
+// Rank-position prefix for /warriors — only the top 10 get a numbered
+// emoji, everyone below that gets no prefix at all (see /warriors below).
+const WARRIOR_RANK_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+// /warriors — roster of everyone who's registered via /warrior, sorted by
+// xp (highest first — the same value level is derived from). Each line:
+// rank emoji (top 10 only), display name, level in parens, health as
+// plain text (not an icon, distinct from the crit/damage messages
+// elsewhere), held real weapon(s) by emoji (blank if none).
 bot.onText(/\/warriors\b/i, (msg) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const warriors = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1 ORDER BY xp DESC').all();
@@ -2405,7 +2411,7 @@ bot.onText(/\/warriors\b/i, (msg) => {
     return;
   }
   const lines = ['⚔️ Воины:'];
-  for (const { user_id } of warriors) {
+  warriors.forEach(({ user_id }, index) => {
     const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(user_id);
     const label = known ? (known.username ? `@${known.username}` : known.first_name) : `игрок ${user_id}`;
     const health = getUserHealth(user_id);
@@ -2413,8 +2419,9 @@ bot.onText(/\/warriors\b/i, (msg) => {
     const level = levelInfoForXp(stats.xp).level;
     const heldWeapons = getWeaponsFor('human', user_id);
     const weaponIcons = heldWeapons.map(row => WEAPON_DEFS[row.weapon_key].emoji).join('');
-    lines.push(`${level}. ${label} — ❤️ ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''}`);
-  }
+    const rankPrefix = index < 10 ? `${WARRIOR_RANK_EMOJIS[index]} ` : '';
+    lines.push(`${rankPrefix}${label}(${level}) — хп: ${health.health}/${health.max_health}${weaponIcons ? ' ' + weaponIcons : ''}`);
+  });
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
@@ -3469,8 +3476,14 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
 // resolution as /kick/duel, including the phantom-topic-reply guard.
 const FUCK_ENERGY_COST = 2;
 const FUCK_SUCCESS_CHANCE = 0.4;
-const FUCK_PARALYSIS_SECONDS = 60 * 60;
+const FUCK_PARALYSIS_MIN_MINUTES = 10;
+const FUCK_PARALYSIS_MAX_MINUTES = 40;
 const FUCK_XP_GAIN = 3;
+// Rolled fresh per success (both the player command below and the
+// goblin/orc attempt in goblinTick) rather than a flat duration.
+function rollFuckParalysisMinutes() {
+  return FUCK_PARALYSIS_MIN_MINUTES + Math.floor(Math.random() * (FUCK_PARALYSIS_MAX_MINUTES - FUCK_PARALYSIS_MIN_MINUTES + 1));
+}
 bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   if (msg.chat.id !== ARENA_CHAT_ID) {
@@ -3551,13 +3564,14 @@ bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   consumeEnergy(msg.from.id, FUCK_ENERGY_COST);
 
   if (Math.random() < FUCK_SUCCESS_CHANCE) {
-    const until = Math.floor(Date.now() / 1000) + FUCK_PARALYSIS_SECONDS;
+    const paralysisMinutes = rollFuckParalysisMinutes();
+    const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
     db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, target.id);
     ensureStatsRow(msg.from.id);
     db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(FUCK_XP_GAIN, msg.from.id);
     await bot.sendMessage(
       msg.chat.id,
-      `😳 ${actorLabel} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на час — не может ни бить, ни быть избитым(ой).`,
+      `😳 ${actorLabel} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на ${paralysisMinutes} мин — не может ни бить, ни быть избитым(ой).`,
       threadOpts(msg)
     ).catch(() => {});
   } else {
@@ -4881,8 +4895,8 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; каждая неверная попытка показывает одну и ту же подсказку — какая по счёту цифра заклинила и чему она равна; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
-    '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% шанс, тратит 2 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на час (не может ни бить, ни быть избитой), провал — просто сообщение',
-    '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, час паралича жертве). Плюс автонабеги: каждое утро в случайный момент 08:00-12:00 сама выходит разведка (15 минут — не зачистили, оставшиеся сбегают), а после обеда в 13:00-18:00 либо усиленная разведка ×1.5 (если утреннюю зачистили, 10 минут), либо рейд без ограничения по времени (если кто-то сбежал)',
+    '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% шанс, тратит 2 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на 10-40 мин (не может ни бить, ни быть избитой), провал — просто сообщение',
+    '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: каждое утро в случайный момент 08:00-12:00 сама выходит разведка (15 минут — не зачистили, оставшиеся сбегают), а после обеда в 13:00-18:00 либо усиленная разведка ×1.5 (если утреннюю зачистили, 10 минут), либо рейд без ограничения по времени (если кто-то сбежал)',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
