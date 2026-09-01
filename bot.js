@@ -2610,7 +2610,7 @@ bot.onText(/\/tree\b/, (msg) => {
   }
   const treeUntil = Math.floor((Date.now() + TREE_DURATION_MS) / 1000);
   db.prepare('UPDATE user_health SET tree_until = ? WHERE user_id = ?').run(treeUntil, msg.from.id);
-  bot.sendMessage(msg.chat.id, `🌳 ${actorLabel} взбирается на дерево и прячется там 5 минут.`, threadOpts(msg)).catch(() => {});
+  bot.sendMessage(msg.chat.id, `🌳🐾 ${actorLabel} вонзается когтями в кору и взбирается на дерево — прячется там 5 минут.`, threadOpts(msg)).catch(() => {});
 });
 
 // /piss_tapki (see WEAPON_DEFS.tapki/isTapkiSoiled) — exclusive to
