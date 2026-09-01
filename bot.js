@@ -1401,11 +1401,42 @@ const MONSTER_TYPES = {
     emoji: '🟤',
     coinsRange: [15, 35],
   },
+  // Boss-tier, solo-only encounter — see /goblinraid тролль below.
+  // maxEnergy: Infinity means the energy<=0 skip in goblinTick/trollTick
+  // never fires for it (never actually runs out of swings on its own —
+  // only the 15-min flee timer, same fleeTimer mechanism the recon uses,
+  // ends the fight if nobody kills it). coinsRange [0,0] — starts broke;
+  // see resolveMonsterSwing's robbery block, which pays into monster.coins
+  // same as goblins/orcs already do, so everything it's robbed off
+  // players is what a killer collects.
+  troll: {
+    names: ['Тролль'],
+    maxHealth: 1000,
+    maxEnergy: Infinity,
+    stats: { accuracy: 4, strength: 15, agility: 1, endurance: 0 },
+    weaponText: 'здоровенной дубиной',
+    emoji: '🧌',
+    coinsRange: [0, 0],
+  },
 };
 // endurance has nothing to act on for either type (no energy regen, no
 // /levelup) — kept on both stat blocks only for shape parity with a
 // player's own getStats().
 const GOBLIN_ATTACK_INTERVAL_MS = 60 * 1000;
+// Тролль-only tuning (see /goblinraid тролль, trollTick, trollRegenTick).
+const TROLL_ATTACK_INTERVAL_MS = 30 * 1000;
+const TROLL_HEALTH_REGEN_INTERVAL_MS = 10 * 1000;
+const TROLL_HEALTH_REGEN_PER_TICK = 10;
+const TROLL_DURATION_MS = 15 * 60 * 1000;
+const TROLL_TARGETS_PER_SWING = 3;
+// Every 4th swing is guaranteed to be a чулан-smash instead of a normal
+// hit (roughly once every 2 minutes at the 30s attack cadence) — see
+// trollTick.
+const TROLL_CHULAN_BREAK_EVERY_N_ATTACKS = 4;
+// Chance, on top of the normal coin-robbery every monster already rolls
+// on a knockout, that the troll specifically also rips away one held
+// weapon — see resolveMonsterSwing's monster.type === 'troll' branch.
+const TROLL_WEAPON_STEAL_CHANCE = 0.5;
 
 // /goblinraid's 4 preset wave compositions — [min, max] goblin/orc counts,
 // rolled independently and inclusive on both ends.
@@ -1442,6 +1473,23 @@ function pickEligibleGoblinTarget() {
     .filter((id) => !isHidden(id) && !isInTree(id) && !isHospitalized(id) && !isParalyzed(id) && getUserHealth(id).health > 0);
   if (eligible.length === 0) return null;
   return eligible[Math.floor(Math.random() * eligible.length)];
+}
+
+// Тролль's own targeting (see trollTick) — no locked target like
+// goblins/orcs, just a fresh batch of up to `count` distinct random
+// eligible warriors every swing. Same eligibility filter as
+// pickEligibleGoblinTarget above, just returning several via a Fisher-
+// Yates shuffle instead of one.
+function pickEligibleGoblinTargets(count) {
+  const rows = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all();
+  const eligible = rows
+    .map((r) => r.user_id)
+    .filter((id) => !isHidden(id) && !isInTree(id) && !isHospitalized(id) && !isParalyzed(id) && getUserHealth(id).health > 0);
+  for (let i = eligible.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [eligible[i], eligible[j]] = [eligible[j], eligible[i]];
+  }
+  return eligible.slice(0, count);
 }
 
 // name index within its own type's pool cycles with a numeric suffix
@@ -1515,18 +1563,146 @@ function endGoblinRaidByFlee() {
   }
 }
 
-// One shared 60s tick drives every alive, still-energetic monster's swing
-// — same "one interval, iterate all live entities" idiom as
-// healthRegenTick/arenaTick rather than a per-monster timer. Opposed roll
-// is the exact same shape as performKick's own (attacker accuracy vs
-// defender dodge, nat-100 auto-hit, nat-0 auto-miss), just with the
-// monster's own MONSTER_TYPES stats standing in for getStats() and no
-// arm/leg/head injury on its side (it doesn't have any).
+// Resolves one monster's swing at one specific human target — the shared
+// 10%-fuck-instead-of-hit branch, the opposed accuracy-vs-dodge roll
+// (exact same shape as performKick's own: nat-100 auto-hit, nat-0
+// auto-miss), damage, and on-knockout coin robbery. Extracted out of
+// goblinTick so both it (single locked target per monster) and trollTick
+// (fresh random targets every swing, no lock) share one implementation.
+// monster.type === 'troll' additionally unlocks a weapon-steal chance on
+// knockout that goblins/orcs don't get (see TROLL_WEAPON_STEAL_CHANCE) —
+// the stolen weapon is just dropped in the raid's chat for anyone but
+// the victim to pick up, same as a natural-0 fumble, since the troll
+// never actually wields anything but his own club.
+async function resolveMonsterSwing(monster, targetUserId) {
+  const def = MONSTER_TYPES[monster.type];
+  const targetLabel = labelForUserId(targetUserId);
+  const chatOpts = goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {};
+
+  // 10% chance this swing is a /fuck attempt instead of a normal hit —
+  // same 40%-success/10-40-min-paralysis mechanic as the player command,
+  // spending this monster's turn either way instead of rolling the usual
+  // accuracy-vs-dodge attack below.
+  if (Math.random() < 0.1) {
+    let fuckMessage;
+    if (Math.random() < FUCK_SUCCESS_CHANCE) {
+      const paralysisMinutes = rollFuckParalysisMinutes();
+      const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
+      db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, targetUserId);
+      fuckMessage = `😳 ${monster.name} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на ${paralysisMinutes} мин — не может ни бить, ни быть избитым(ой).`;
+    } else {
+      fuckMessage = `😅 ${monster.name} пытается трахнуть ${targetLabel}, но ничего не вышло.`;
+    }
+    const fuckSent = await bot.sendMessage(goblinRaid.chatId, fuckMessage, chatOpts).catch(() => null);
+    if (fuckSent) goblinMessageIds.set(fuckSent.message_id, monster.id);
+    return;
+  }
+
+  const targetInjury = getUserInjury(targetUserId);
+  const targetStats = getStats(targetUserId);
+
+  const roll = Math.floor(Math.random() * 101);
+  let success;
+  let dodged = false;
+  let attackerScore = null;
+  let defenderScore = null;
+  if (roll === 100) {
+    success = true;
+  } else if (roll === 0) {
+    success = false;
+  } else {
+    attackerScore = roll + def.stats.accuracy * ACCURACY_PER_POINT;
+    const dodgeBuffBonus = getHitThreshold(targetUserId) - 50;
+    const defendDodgeBonus = isDefending(targetUserId) ? DEFEND_DODGE_BONUS : 0;
+    const defenderRoll = Math.floor(Math.random() * 101);
+    defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
+    success = attackerScore > defenderScore;
+    dodged = !success;
+  }
+
+  const outcome = roll === 0 ? '❌ неудачно' : dodged ? '🌀 уворот!' : '✅ удачно';
+  const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
+  const sent = await bot.sendMessage(
+    goblinRaid.chatId,
+    `${def.emoji} ${monster.name} бьёт ${targetLabel} ${def.weaponText} ${outcome}: ${roll}/100${scoreText}`,
+    chatOpts
+  ).catch(() => null);
+  if (sent) goblinMessageIds.set(sent.message_id, monster.id);
+  if (!success) return;
+
+  const defendFactor = isDefending(targetUserId) ? (1 - DEFEND_DAMAGE_REDUCTION) : 1;
+  const before = getUserHealth(targetUserId);
+  let after;
+  if (roll === 100) {
+    after = damageHuman(targetUserId, goblinRaid.chatId, null, before.health);
+    await bot.sendMessage(
+      goblinRaid.chatId,
+      `💯 СОКРУШИТЕЛЬНЫЙ УДАР! ${monster.name} сносит ${targetLabel} всё здоровье разом (${before.health} -> ${after})!`,
+      chatOpts
+    ).catch(() => {});
+  } else {
+    const strengthFactor = 1 + def.stats.strength * STRENGTH_DAMAGE_PER_POINT;
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+    const dmg = Math.round(rawDmg * strengthFactor * defendFactor); // club multiplier is 1
+    after = damageHuman(targetUserId, goblinRaid.chatId, null, dmg);
+    await bot.sendMessage(
+      goblinRaid.chatId,
+      `💥 Урон ${targetLabel}: ${dmg} (${before.health} -> ${after})`,
+      chatOpts
+    ).catch(() => {});
+  }
+
+  if (after === 0) {
+    // Robbery attempt on the kill — 50% chance to even try, and even
+    // then only a random cut of whatever coins they're carrying, not
+    // a guaranteed clean-out.
+    ensureStatsRow(targetUserId);
+    const victimCoins = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(targetUserId).coins;
+    if (victimCoins > 0 && Math.random() < 0.5) {
+      const stolen = 1 + Math.floor(Math.random() * victimCoins);
+      db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ?').run(stolen, targetUserId);
+      monster.coins += stolen;
+      await bot.sendMessage(
+        goblinRaid.chatId,
+        `🪙 ${monster.name} обчистил ${targetLabel} на ${stolen} монет, пока тот без сознания!`,
+        chatOpts
+      ).catch(() => {});
+    }
+
+    if (monster.type === 'troll') {
+      const heldWeapons = getWeaponsFor('human', targetUserId);
+      if (heldWeapons.length > 0 && Math.random() < TROLL_WEAPON_STEAL_CHANCE) {
+        const stolenRow = heldWeapons[Math.floor(Math.random() * heldWeapons.length)];
+        if (stolenRow.instanceKey.startsWith('knife:')) {
+          const knifeId = Number(stolenRow.instanceKey.slice('knife:'.length));
+          db.prepare('UPDATE owned_knives SET owner_user_id = ?, owner_username = NULL, is_dropped = 1, dropped_chat_id = ? WHERE id = ?').run(targetUserId, goblinRaid.chatId, knifeId);
+        } else {
+          db.prepare(
+            "UPDATE weapon_ownership SET owner_type = 'dropped', owner_user_id = ?, owner_username = NULL, dropped_chat_id = ? WHERE weapon_key = ?"
+          ).run(targetUserId, goblinRaid.chatId, stolenRow.weapon_key);
+        }
+        const stolenDef = WEAPON_DEFS[stolenRow.weapon_key];
+        await bot.sendMessage(
+          goblinRaid.chatId,
+          `${stolenDef.emoji} ${monster.name} вырывает у ${targetLabel} ${stolenDef.accusative} и отшвыривает — своя дубина роднее! Кто первым напишет в чат (кроме ${targetLabel}) — подберёт.`,
+          chatOpts
+        ).catch(() => {});
+      }
+    }
+  }
+}
+
+// One shared 60s tick drives every alive, still-energetic goblin/orc's
+// swing — same "one interval, iterate all live entities" idiom as
+// healthRegenTick/arenaTick rather than a per-monster timer. Trolls skip
+// this entirely (own faster cadence, own targeting — see trollTick);
+// the guard below is just defensive in case one ever ended up sharing a
+// raid with goblins/orcs, which nothing currently does.
 async function goblinTick() {
   if (!goblinRaid || isPvpPaused()) return;
   for (const goblin of goblinRaid.goblins.values()) {
+    if (goblin.type === 'troll') continue;
     if (goblin.health <= 0 || goblin.energy <= 0) continue;
-    const def = MONSTER_TYPES[goblin.type];
     if (!goblin.targetUserId) {
       goblin.targetUserId = pickEligibleGoblinTarget();
       if (!goblin.targetUserId) continue;
@@ -1535,105 +1711,70 @@ async function goblinTick() {
       continue; // waits for its locked target to become reachable again, never re-targets on its own
     }
     goblin.energy -= 1;
-    const targetLabel = labelForUserId(goblin.targetUserId);
-
-    // 10% chance this swing is a /fuck attempt instead of a normal hit —
-    // same 40%-success/10-40-min-paralysis mechanic as the player
-    // command, spending this goblin's turn (and its energy, already
-    // deducted above) either way instead of rolling the usual
-    // accuracy-vs-dodge attack below.
-    if (Math.random() < 0.1) {
-      let fuckMessage;
-      if (Math.random() < FUCK_SUCCESS_CHANCE) {
-        const paralysisMinutes = rollFuckParalysisMinutes();
-        const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
-        db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, goblin.targetUserId);
-        fuckMessage = `😳 ${goblin.name} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на ${paralysisMinutes} мин — не может ни бить, ни быть избитым(ой).`;
-      } else {
-        fuckMessage = `😅 ${goblin.name} пытается трахнуть ${targetLabel}, но ничего не вышло.`;
-      }
-      const fuckSent = await bot.sendMessage(
-        goblinRaid.chatId,
-        fuckMessage,
-        goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
-      ).catch(() => null);
-      if (fuckSent) goblinMessageIds.set(fuckSent.message_id, goblin.id);
-      continue;
-    }
-
-    const targetInjury = getUserInjury(goblin.targetUserId);
-    const targetStats = getStats(goblin.targetUserId);
-
-    const roll = Math.floor(Math.random() * 101);
-    let success;
-    let dodged = false;
-    let attackerScore = null;
-    let defenderScore = null;
-    if (roll === 100) {
-      success = true;
-    } else if (roll === 0) {
-      success = false;
-    } else {
-      attackerScore = roll + def.stats.accuracy * ACCURACY_PER_POINT;
-      const dodgeBuffBonus = getHitThreshold(goblin.targetUserId) - 50;
-      const defendDodgeBonus = isDefending(goblin.targetUserId) ? DEFEND_DODGE_BONUS : 0;
-      const defenderRoll = Math.floor(Math.random() * 101);
-      defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
-      success = attackerScore > defenderScore;
-      dodged = !success;
-    }
-
-    const outcome = roll === 0 ? '❌ неудачно' : dodged ? '🌀 уворот!' : '✅ удачно';
-    const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
-    const sent = await bot.sendMessage(
-      goblinRaid.chatId,
-      `${def.emoji} ${goblin.name} бьёт ${targetLabel} ${def.weaponText} ${outcome}: ${roll}/100${scoreText}`,
-      goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
-    ).catch(() => null);
-    if (sent) goblinMessageIds.set(sent.message_id, goblin.id);
-    if (!success) continue;
-
-    const defendFactor = isDefending(goblin.targetUserId) ? (1 - DEFEND_DAMAGE_REDUCTION) : 1;
-    const before = getUserHealth(goblin.targetUserId);
-    let after;
-    if (roll === 100) {
-      after = damageHuman(goblin.targetUserId, goblinRaid.chatId, null, before.health);
-      await bot.sendMessage(
-        goblinRaid.chatId,
-        `💯 СОКРУШИТЕЛЬНЫЙ УДАР! ${goblin.name} сносит ${targetLabel} всё здоровье разом (${before.health} -> ${after})!`,
-        goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
-      ).catch(() => {});
-    } else {
-      const strengthFactor = 1 + def.stats.strength * STRENGTH_DAMAGE_PER_POINT;
-      const rawDmg = Math.floor(Math.random() * 20) + 1;
-      const dmg = Math.round(rawDmg * strengthFactor * defendFactor); // club multiplier is 1
-      after = damageHuman(goblin.targetUserId, goblinRaid.chatId, null, dmg);
-      await bot.sendMessage(
-        goblinRaid.chatId,
-        `💥 Урон ${targetLabel}: ${dmg} (${before.health} -> ${after})`,
-        goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
-      ).catch(() => {});
-    }
-
-    if (after === 0) {
-      // Robbery attempt on the kill — 50% chance to even try, and even
-      // then only a random cut of whatever coins they're carrying, not
-      // a guaranteed clean-out.
-      ensureStatsRow(goblin.targetUserId);
-      const victimCoins = db.prepare('SELECT coins FROM pvp_stats WHERE user_id = ?').get(goblin.targetUserId).coins;
-      if (victimCoins > 0 && Math.random() < 0.5) {
-        const stolen = 1 + Math.floor(Math.random() * victimCoins);
-        db.prepare('UPDATE pvp_stats SET coins = coins - ? WHERE user_id = ?').run(stolen, goblin.targetUserId);
-        goblin.coins += stolen;
-        await bot.sendMessage(
-          goblinRaid.chatId,
-          `🪙 ${goblin.name} обчистил ${targetLabel} на ${stolen} монет, пока тот без сознания!`,
-          goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
-        ).catch(() => {});
-      }
-    }
+    await resolveMonsterSwing(goblin, goblin.targetUserId);
   }
 }
+
+// Тролль's own 30s attack cadence (see TROLL_ATTACK_INTERVAL_MS) — a
+// solo boss encounter, so this only ever looks for one. Every 4th swing
+// (TROLL_CHULAN_BREAK_EVERY_N_ATTACKS) is guaranteed to be a чулан-smash
+// instead of a normal hit: ends every currently-hidden person's /hide
+// session at once, chat-wide (hidden_until isn't scoped to a chat, same
+// as /hide itself). Otherwise: TROLL_TARGETS_PER_SWING fresh random
+// eligible targets (no locked target, unlike goblins/orcs), each an
+// independent resolveMonsterSwing call — stops early if one of them
+// happens to kill it (someone else's /kick landing between swings).
+async function trollTick() {
+  if (!goblinRaid || isPvpPaused()) return;
+  const troll = [...goblinRaid.goblins.values()].find((m) => m.type === 'troll' && m.health > 0);
+  if (!troll) return;
+
+  const chatOpts = goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {};
+  troll.attackCount = (troll.attackCount || 0) + 1;
+  if (troll.attackCount % TROLL_CHULAN_BREAK_EVERY_N_ATTACKS === 0) {
+    const now = Math.floor(Date.now() / 1000);
+    const hiddenRows = db.prepare('SELECT user_id FROM user_health WHERE hidden_until IS NOT NULL AND hidden_until * 1000 > ?').all(Date.now());
+    if (hiddenRows.length === 0) {
+      await bot.sendMessage(goblinRaid.chatId, `${MONSTER_TYPES.troll.emoji} ${troll.name} с рёвом бьёт по чулану — но там никого нет!`, chatOpts).catch(() => {});
+      return;
+    }
+    const names = hiddenRows.map((row) => {
+      endHideSession(row.user_id, now);
+      return labelForUserId(row.user_id);
+    });
+    await bot.sendMessage(
+      goblinRaid.chatId,
+      `${MONSTER_TYPES.troll.emoji} ${troll.name} с рёвом разносит чулан в щепки! Наружу вылетают: ${names.join(', ')}!`,
+      chatOpts
+    ).catch(() => {});
+    return;
+  }
+
+  const targets = pickEligibleGoblinTargets(TROLL_TARGETS_PER_SWING);
+  if (targets.length === 0) return;
+  for (const targetUserId of targets) {
+    await resolveMonsterSwing(troll, targetUserId);
+    if (troll.health <= 0) break;
+  }
+}
+
+// Тролль's own HP regen (see TROLL_HEALTH_REGEN_INTERVAL_MS) — a
+// permanent, always-on tick (same idiom as healthRegenTick/bleedTick)
+// rather than a per-raid timer tied to goblinRaid's lifecycle: it's a
+// cheap no-op whenever there's no live troll, so there's nothing to
+// leak or forget to clear when a raid ends.
+function trollRegenTick() {
+  if (!goblinRaid) return;
+  const troll = [...goblinRaid.goblins.values()].find((m) => m.type === 'troll');
+  if (!troll || troll.health <= 0 || troll.health >= troll.maxHealth) return;
+  troll.health = Math.min(troll.maxHealth, troll.health + TROLL_HEALTH_REGEN_PER_TICK);
+  bot.sendMessage(
+    goblinRaid.chatId,
+    `${MONSTER_TYPES.troll.emoji} ${troll.name} восстанавливает силы: +${TROLL_HEALTH_REGEN_PER_TICK} ХП (${troll.health}/${troll.maxHealth})`,
+    goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
+  ).catch(() => {});
+}
+setInterval(trollRegenTick, TROLL_HEALTH_REGEN_INTERVAL_MS);
 
 // Static per-weapon flavor/multiplier for the three real, stealable
 // weapons (see weapon_ownership above for who currently holds them).
@@ -4062,9 +4203,33 @@ bot.onText(/\/goblinraid\b(?:\s+(\S+))?/i, async (msg, match) => {
     return bot.sendMessage(msg.chat.id, 'Набег уже идёт.', threadOpts(msg)).catch(() => {});
   }
   const tierName = (match[1] || 'рейд').toLowerCase();
+
+  // Тролль — a standalone boss tier, not drawn from RAID_TIERS' goblin/
+  // orc [min,max] shape at all: exactly one, own faster tick function
+  // (trollTick, not goblinTick — see its own targeting/чулан-break
+  // logic), same fleeTimer mechanism the scheduled recon already uses
+  // for its own time limit.
+  if (tierName === 'тролль') {
+    const troll = spawnMonster('troll', 0);
+    const goblins = new Map([[troll.id, troll]]);
+    goblinRaid = {
+      goblins,
+      chatId: msg.chat.id,
+      threadId: msg.message_thread_id || null,
+      tickTimer: setInterval(trollTick, TROLL_ATTACK_INTERVAL_MS),
+      fleeTimer: setTimeout(endGoblinRaidByFlee, TROLL_DURATION_MS),
+    };
+    await bot.sendMessage(
+      msg.chat.id,
+      `${MONSTER_TYPES.troll.emoji} ТРОЛЛЬ! Из-под моста вылезает исполинский тролль с дубиной (${troll.maxHealth} ХП). Бьёт сразу троих раз в 30 сек, регенерирует ${TROLL_HEALTH_REGEN_PER_TICK} ХП каждые 10 сек, и раз в несколько ударов сносит чулан со всеми, кто там прячется. Не убьёте за 15 минут — сбежит. Бей через /kick ${troll.name} (или ответом на его сообщение об ударе).`,
+      threadOpts(msg)
+    ).catch(() => {});
+    return;
+  }
+
   const tier = RAID_TIERS[tierName];
   if (!tier) {
-    return bot.sendMessage(msg.chat.id, `Неизвестный уровень набега. Варианты: ${Object.keys(RAID_TIERS).join(', ')}.`, threadOpts(msg)).catch(() => {});
+    return bot.sendMessage(msg.chat.id, `Неизвестный уровень набега. Варианты: ${Object.keys(RAID_TIERS).join(', ')}, тролль.`, threadOpts(msg)).catch(() => {});
   }
 
   const goblinCount = randIntInclusive(tier.goblins[0], tier.goblins[1]);
@@ -4106,6 +4271,12 @@ bot.onText(/\/goblins\b/i, (msg) => {
   const lines = [...goblinRaid.goblins.values()].map((g) => {
     if (g.health <= 0) return `💀 ${g.name} — мёртв`;
     const emoji = MONSTER_TYPES[g.type].emoji;
+    // Тролль has no locked target (fresh random 3 every swing) and
+    // infinite energy — the goblin/orc-style "⚡N → бьёт X" line doesn't
+    // apply to it.
+    if (g.type === 'troll') {
+      return `${emoji} ${g.name} — ${g.health}/${g.maxHealth} ХП, бьёт сразу троих раз в 30 сек`;
+    }
     const targetText = g.targetUserId ? ` → бьёт ${labelForUserId(g.targetUserId)}` : ' → ждёт цель';
     return `${emoji} ${g.name} — ${g.health}/${g.maxHealth} ХП, ⚡${g.energy}${targetText}`;
   });
@@ -5385,7 +5556,8 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
     '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% успех, 50% провал, 10% сам(а) не сдержался(-лась); тратит 3 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на 10-40 мин (не может ни бить, ни быть избитой); провал — просто сообщение; на 10% атакующий сам(а) парализуется на 10-40 мин, жертву не трогает',
-    '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: разведка выходит дважды в день, в случайный момент 08:00-12:00 и ещё раз 18:00-22:00 (15 минут — не зачистили, оставшиеся сбегают); ровно через 10 минут после конца каждой разведки — если зачистили, усиленная разведка ×1.5 (10 минут); если кто-то сбежал — случайно рейд (40%), атака (40%) или нашествие (20%), без ограничения по времени',
+    '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков), тролль (см. ниже). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: разведка выходит дважды в день, в случайный момент 08:00-12:00 и ещё раз 18:00-22:00 (15 минут — не зачистили, оставшиеся сбегают); ровно через 10 минут после конца каждой разведки — если зачистили, усиленная разведка ×1.5 (10 минут); если кто-то сбежал — случайно рейд (40%), атака (40%) или нашествие (20%), без ограничения по времени',
+    '/goblinraid тролль — (админ) отдельный одиночный босс, не смешивается с гоблинами/орками. 1000 ХП, точность 4, уворот 1, сила 15, энергия бесконечная; регенерирует 10 ХП каждые 10 сек (с сообщением в чат); бьёт раз в 30 сек сразу троих случайных воинов одним ударом (тот же 10% шанс /fuck вместо удара, что и у гоблинов); каждый 4-й удар вместо этого сносит чулан — все, кто там прятался, вылетают наружу; сбегает через 15 минут, если не убить. При нокауте — тот же 50%-шанс ограбить монеты, что у гоблина/орка (изначально у тролля 0 монет — всё, что при смерти достанется убийце, награблено за бой), плюс 50% шанс дополнительно вырвать у жертвы одно оружие (сам он им не пользуется — только своей дубиной; оружие падает в чат, забрать может кто угодно кроме самой жертвы)',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
