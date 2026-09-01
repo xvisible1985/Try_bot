@@ -1401,14 +1401,18 @@ const MONSTER_TYPES = {
     emoji: '🟤',
     coinsRange: [15, 35],
   },
-  // Boss-tier, solo-only encounter — see /goblinraid тролль below.
-  // maxEnergy: Infinity means the energy<=0 skip in goblinTick/trollTick
-  // never fires for it (never actually runs out of swings on its own —
-  // only the 15-min flee timer, same fleeTimer mechanism the recon uses,
-  // ends the fight if nobody kills it). coinsRange [0,0] — starts broke;
-  // see resolveMonsterSwing's robbery block, which pays into monster.coins
-  // same as goblins/orcs already do, so everything it's robbed off
-  // players is what a killer collects.
+  // Boss-tier, solo-only encounters — see /goblinraid тролль/тролленок
+  // below. maxEnergy: Infinity means the energy<=0 skip in goblinTick/
+  // trollTick never fires for either (never actually runs out of swings
+  // on its own — only the 15-min flee timer, same fleeTimer mechanism
+  // the recon uses, ends the fight if nobody kills it). coinsRange
+  // [0,0] — starts broke; see resolveMonsterSwing's robbery block, which
+  // pays into monster.coins same as goblins/orcs already do, so
+  // everything it's robbed off players is what a killer collects.
+  // swingTargets/regenIntervalMs/regenPerTick/stealsWeapons are read by
+  // trollTick/trollRegenTick/resolveMonsterSwing — every other monster
+  // type leaves these undefined, which is fine since only troll-type
+  // code paths (see TROLL_TYPES) ever read them.
   troll: {
     names: ['Тролль'],
     maxHealth: 1000,
@@ -1417,25 +1421,52 @@ const MONSTER_TYPES = {
     weaponText: 'здоровенной дубиной',
     emoji: '🧌',
     coinsRange: [0, 0],
+    swingTargets: 3,
+    regenIntervalMs: 10 * 1000,
+    regenPerTick: 10,
+    stealsWeapons: true,
+  },
+  // Weaker cub version — /goblinraid тролленок. Same accuracy/agility as
+  // the adult, everything else scaled down: less strength, less HP,
+  // hits 2 targets instead of 3, regenerates much slower.
+  troll_young: {
+    names: ['Молодой тролль'],
+    maxHealth: 650,
+    maxEnergy: Infinity,
+    stats: { accuracy: 4, strength: 8, agility: 1, endurance: 0 },
+    weaponText: 'дубиной',
+    emoji: '🧌',
+    coinsRange: [0, 0],
+    swingTargets: 2,
+    regenIntervalMs: 40 * 1000,
+    regenPerTick: 5,
+    stealsWeapons: true,
   },
 };
 // endurance has nothing to act on for either type (no energy regen, no
 // /levelup) — kept on both stat blocks only for shape parity with a
 // player's own getStats().
 const GOBLIN_ATTACK_INTERVAL_MS = 60 * 1000;
-// Тролль-only tuning (see /goblinraid тролль, trollTick, trollRegenTick).
+// Тролль-only tuning (see /goblinraid тролль/тролленок, trollTick,
+// trollRegenTick) — shared across both troll variants; whatever differs
+// per variant (targets/regen/strength/HP) lives on their own
+// MONSTER_TYPES entry instead, read via TROLL_TYPES below.
+const TROLL_TYPES = new Set(['troll', 'troll_young']);
 const TROLL_ATTACK_INTERVAL_MS = 30 * 1000;
-const TROLL_HEALTH_REGEN_INTERVAL_MS = 10 * 1000;
-const TROLL_HEALTH_REGEN_PER_TICK = 10;
+// Granularity trollRegenTick actually runs at — the GCD of every troll
+// variant's own regenIntervalMs (10s and 40s), so each variant's regen
+// fires exactly on its own schedule via per-monster lastRegenAt
+// tracking, not by trying to run several different setInterval cadences
+// at once.
+const TROLL_REGEN_CHECK_INTERVAL_MS = 5 * 1000;
 const TROLL_DURATION_MS = 15 * 60 * 1000;
-const TROLL_TARGETS_PER_SWING = 3;
 // Every 4th swing is guaranteed to be a чулан-smash instead of a normal
 // hit (roughly once every 2 minutes at the 30s attack cadence) — see
-// trollTick.
+// trollTick. Same for both variants.
 const TROLL_CHULAN_BREAK_EVERY_N_ATTACKS = 4;
 // Chance, on top of the normal coin-robbery every monster already rolls
-// on a knockout, that the troll specifically also rips away one held
-// weapon — see resolveMonsterSwing's monster.type === 'troll' branch.
+// on a knockout, that a stealsWeapons monster specifically also rips
+// away one held weapon — see resolveMonsterSwing's stealsWeapons check.
 const TROLL_WEAPON_STEAL_CHANCE = 0.5;
 
 // /goblinraid's 4 preset wave compositions — [min, max] goblin/orc counts,
@@ -1669,7 +1700,7 @@ async function resolveMonsterSwing(monster, targetUserId) {
       ).catch(() => {});
     }
 
-    if (monster.type === 'troll') {
+    if (def.stealsWeapons) {
       const heldWeapons = getWeaponsFor('human', targetUserId);
       if (heldWeapons.length > 0 && Math.random() < TROLL_WEAPON_STEAL_CHANCE) {
         const stolenRow = heldWeapons[Math.floor(Math.random() * heldWeapons.length)];
@@ -1701,7 +1732,7 @@ async function resolveMonsterSwing(monster, targetUserId) {
 async function goblinTick() {
   if (!goblinRaid || isPvpPaused()) return;
   for (const goblin of goblinRaid.goblins.values()) {
-    if (goblin.type === 'troll') continue;
+    if (TROLL_TYPES.has(goblin.type)) continue;
     if (goblin.health <= 0 || goblin.energy <= 0) continue;
     if (!goblin.targetUserId) {
       goblin.targetUserId = pickEligibleGoblinTarget();
@@ -1715,19 +1746,22 @@ async function goblinTick() {
   }
 }
 
-// Тролль's own 30s attack cadence (see TROLL_ATTACK_INTERVAL_MS) — a
-// solo boss encounter, so this only ever looks for one. Every 4th swing
-// (TROLL_CHULAN_BREAK_EVERY_N_ATTACKS) is guaranteed to be a чулан-smash
-// instead of a normal hit: ends every currently-hidden person's /hide
-// session at once, chat-wide (hidden_until isn't scoped to a chat, same
-// as /hide itself). Otherwise: TROLL_TARGETS_PER_SWING fresh random
-// eligible targets (no locked target, unlike goblins/orcs), each an
-// independent resolveMonsterSwing call — stops early if one of them
-// happens to kill it (someone else's /kick landing between swings).
+// Тролль's own 30s attack cadence (see TROLL_ATTACK_INTERVAL_MS), shared
+// by both variants — a solo boss encounter, so this only ever looks for
+// one live troll-type monster (see TROLL_TYPES) regardless of which.
+// Every 4th swing (TROLL_CHULAN_BREAK_EVERY_N_ATTACKS) is guaranteed to
+// be a чулан-smash instead of a normal hit: ends every currently-hidden
+// person's /hide session at once, chat-wide (hidden_until isn't scoped
+// to a chat, same as /hide itself). Otherwise: this troll's own
+// swingTargets fresh random eligible targets (no locked target, unlike
+// goblins/orcs), each an independent resolveMonsterSwing call — stops
+// early if one of them happens to kill it (someone else's /kick landing
+// between swings).
 async function trollTick() {
   if (!goblinRaid || isPvpPaused()) return;
-  const troll = [...goblinRaid.goblins.values()].find((m) => m.type === 'troll' && m.health > 0);
+  const troll = [...goblinRaid.goblins.values()].find((m) => TROLL_TYPES.has(m.type) && m.health > 0);
   if (!troll) return;
+  const def = MONSTER_TYPES[troll.type];
 
   const chatOpts = goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {};
   troll.attackCount = (troll.attackCount || 0) + 1;
@@ -1735,7 +1769,7 @@ async function trollTick() {
     const now = Math.floor(Date.now() / 1000);
     const hiddenRows = db.prepare('SELECT user_id FROM user_health WHERE hidden_until IS NOT NULL AND hidden_until * 1000 > ?').all(Date.now());
     if (hiddenRows.length === 0) {
-      await bot.sendMessage(goblinRaid.chatId, `${MONSTER_TYPES.troll.emoji} ${troll.name} с рёвом бьёт по чулану — но там никого нет!`, chatOpts).catch(() => {});
+      await bot.sendMessage(goblinRaid.chatId, `${def.emoji} ${troll.name} с рёвом бьёт по чулану — но там никого нет!`, chatOpts).catch(() => {});
       return;
     }
     const names = hiddenRows.map((row) => {
@@ -1744,13 +1778,13 @@ async function trollTick() {
     });
     await bot.sendMessage(
       goblinRaid.chatId,
-      `${MONSTER_TYPES.troll.emoji} ${troll.name} с рёвом разносит чулан в щепки! Наружу вылетают: ${names.join(', ')}!`,
+      `${def.emoji} ${troll.name} с рёвом разносит чулан в щепки! Наружу вылетают: ${names.join(', ')}!`,
       chatOpts
     ).catch(() => {});
     return;
   }
 
-  const targets = pickEligibleGoblinTargets(TROLL_TARGETS_PER_SWING);
+  const targets = pickEligibleGoblinTargets(def.swingTargets);
   if (targets.length === 0) return;
   for (const targetUserId of targets) {
     await resolveMonsterSwing(troll, targetUserId);
@@ -1758,23 +1792,30 @@ async function trollTick() {
   }
 }
 
-// Тролль's own HP regen (see TROLL_HEALTH_REGEN_INTERVAL_MS) — a
-// permanent, always-on tick (same idiom as healthRegenTick/bleedTick)
-// rather than a per-raid timer tied to goblinRaid's lifecycle: it's a
-// cheap no-op whenever there's no live troll, so there's nothing to
-// leak or forget to clear when a raid ends.
+// Тролль's own HP regen — a permanent, always-on tick (same idiom as
+// healthRegenTick/bleedTick) rather than a per-raid timer tied to
+// goblinRaid's lifecycle: cheap no-op whenever there's no live troll, so
+// nothing to leak or forget to clear when a raid ends. Runs at the fine
+// TROLL_REGEN_CHECK_INTERVAL_MS granularity but only actually applies a
+// tick to a given troll once its OWN regenIntervalMs has elapsed since
+// lastRegenAt — lets the two variants regen on genuinely different
+// schedules (10s/40s) off one shared interval instead of two.
 function trollRegenTick() {
   if (!goblinRaid) return;
-  const troll = [...goblinRaid.goblins.values()].find((m) => m.type === 'troll');
+  const troll = [...goblinRaid.goblins.values()].find((m) => TROLL_TYPES.has(m.type));
   if (!troll || troll.health <= 0 || troll.health >= troll.maxHealth) return;
-  troll.health = Math.min(troll.maxHealth, troll.health + TROLL_HEALTH_REGEN_PER_TICK);
+  const def = MONSTER_TYPES[troll.type];
+  const now = Date.now();
+  if (troll.lastRegenAt && now - troll.lastRegenAt < def.regenIntervalMs) return;
+  troll.lastRegenAt = now;
+  troll.health = Math.min(troll.maxHealth, troll.health + def.regenPerTick);
   bot.sendMessage(
     goblinRaid.chatId,
-    `${MONSTER_TYPES.troll.emoji} ${troll.name} восстанавливает силы: +${TROLL_HEALTH_REGEN_PER_TICK} ХП (${troll.health}/${troll.maxHealth})`,
+    `${def.emoji} ${troll.name} восстанавливает силы: +${def.regenPerTick} ХП (${troll.health}/${troll.maxHealth})`,
     goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {}
   ).catch(() => {});
 }
-setInterval(trollRegenTick, TROLL_HEALTH_REGEN_INTERVAL_MS);
+setInterval(trollRegenTick, TROLL_REGEN_CHECK_INTERVAL_MS);
 
 // Static per-weapon flavor/multiplier for the three real, stealable
 // weapons (see weapon_ownership above for who currently holds them).
@@ -4204,13 +4245,15 @@ bot.onText(/\/goblinraid\b(?:\s+(\S+))?/i, async (msg, match) => {
   }
   const tierName = (match[1] || 'рейд').toLowerCase();
 
-  // Тролль — a standalone boss tier, not drawn from RAID_TIERS' goblin/
-  // orc [min,max] shape at all: exactly one, own faster tick function
-  // (trollTick, not goblinTick — see its own targeting/чулан-break
-  // logic), same fleeTimer mechanism the scheduled recon already uses
-  // for its own time limit.
-  if (tierName === 'тролль') {
-    const troll = spawnMonster('troll', 0);
+  // Тролль/тролленок — standalone boss tiers, not drawn from RAID_TIERS'
+  // goblin/orc [min,max] shape at all: exactly one, own faster tick
+  // function (trollTick, not goblinTick — see its own targeting/
+  // чулан-break logic), same fleeTimer mechanism the scheduled recon
+  // already uses for its own time limit.
+  const TROLL_TIER_TO_TYPE = { 'тролль': 'troll', 'тролленок': 'troll_young' };
+  if (TROLL_TIER_TO_TYPE[tierName]) {
+    const troll = spawnMonster(TROLL_TIER_TO_TYPE[tierName], 0);
+    const def = MONSTER_TYPES[troll.type];
     const goblins = new Map([[troll.id, troll]]);
     goblinRaid = {
       goblins,
@@ -4221,7 +4264,7 @@ bot.onText(/\/goblinraid\b(?:\s+(\S+))?/i, async (msg, match) => {
     };
     await bot.sendMessage(
       msg.chat.id,
-      `${MONSTER_TYPES.troll.emoji} ТРОЛЛЬ! Из-под моста вылезает исполинский тролль с дубиной (${troll.maxHealth} ХП). Бьёт сразу троих раз в 30 сек, регенерирует ${TROLL_HEALTH_REGEN_PER_TICK} ХП каждые 10 сек, и раз в несколько ударов сносит чулан со всеми, кто там прячется. Не убьёте за 15 минут — сбежит. Бей через /kick ${troll.name} (или ответом на его сообщение об ударе).`,
+      `${def.emoji} ${troll.name.toUpperCase()}! Из-под моста вылезает ${troll.name.toLowerCase()} с дубиной (${troll.maxHealth} ХП). Бьёт сразу ${def.swingTargets === 2 ? 'двоих' : 'троих'} раз в 30 сек, регенерирует ${def.regenPerTick} ХП каждые ${def.regenIntervalMs / 1000} сек, и раз в несколько ударов сносит чулан со всеми, кто там прячется. Не убьёте за 15 минут — сбежит. Бей через /kick ${troll.name} (или ответом на его сообщение об ударе).`,
       threadOpts(msg)
     ).catch(() => {});
     return;
@@ -4229,7 +4272,7 @@ bot.onText(/\/goblinraid\b(?:\s+(\S+))?/i, async (msg, match) => {
 
   const tier = RAID_TIERS[tierName];
   if (!tier) {
-    return bot.sendMessage(msg.chat.id, `Неизвестный уровень набега. Варианты: ${Object.keys(RAID_TIERS).join(', ')}, тролль.`, threadOpts(msg)).catch(() => {});
+    return bot.sendMessage(msg.chat.id, `Неизвестный уровень набега. Варианты: ${Object.keys(RAID_TIERS).join(', ')}, ${Object.keys(TROLL_TIER_TO_TYPE).join(', ')}.`, threadOpts(msg)).catch(() => {});
   }
 
   const goblinCount = randIntInclusive(tier.goblins[0], tier.goblins[1]);
@@ -4271,11 +4314,12 @@ bot.onText(/\/goblins\b/i, (msg) => {
   const lines = [...goblinRaid.goblins.values()].map((g) => {
     if (g.health <= 0) return `💀 ${g.name} — мёртв`;
     const emoji = MONSTER_TYPES[g.type].emoji;
-    // Тролль has no locked target (fresh random 3 every swing) and
-    // infinite energy — the goblin/orc-style "⚡N → бьёт X" line doesn't
-    // apply to it.
-    if (g.type === 'troll') {
-      return `${emoji} ${g.name} — ${g.health}/${g.maxHealth} ХП, бьёт сразу троих раз в 30 сек`;
+    // Тролль/тролленок have no locked target (fresh random targets every
+    // swing) and infinite energy — the goblin/orc-style "⚡N → бьёт X"
+    // line doesn't apply to them.
+    if (TROLL_TYPES.has(g.type)) {
+      const swingTargets = MONSTER_TYPES[g.type].swingTargets;
+      return `${emoji} ${g.name} — ${g.health}/${g.maxHealth} ХП, бьёт сразу ${swingTargets === 2 ? 'двоих' : 'троих'} раз в 30 сек`;
     }
     const targetText = g.targetUserId ? ` → бьёт ${labelForUserId(g.targetUserId)}` : ' → ждёт цель';
     return `${emoji} ${g.name} — ${g.health}/${g.maxHealth} ХП, ⚡${g.energy}${targetText}`;
@@ -5557,7 +5601,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/duelaccept — принять вызов на дуэль (см. /duel)',
     '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% успех, 50% провал, 10% сам(а) не сдержался(-лась); тратит 3 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на 10-40 мин (не может ни бить, ни быть избитой); провал — просто сообщение; на 10% атакующий сам(а) парализуется на 10-40 мин, жертву не трогает',
     '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков), тролль (см. ниже). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: разведка выходит дважды в день, в случайный момент 08:00-12:00 и ещё раз 18:00-22:00 (15 минут — не зачистили, оставшиеся сбегают); ровно через 10 минут после конца каждой разведки — если зачистили, усиленная разведка ×1.5 (10 минут); если кто-то сбежал — случайно рейд (40%), атака (40%) или нашествие (20%), без ограничения по времени',
-    '/goblinraid тролль — (админ) отдельный одиночный босс, не смешивается с гоблинами/орками. 1000 ХП, точность 4, уворот 1, сила 15, энергия бесконечная; регенерирует 10 ХП каждые 10 сек (с сообщением в чат); бьёт раз в 30 сек сразу троих случайных воинов одним ударом (тот же 10% шанс /fuck вместо удара, что и у гоблинов); каждый 4-й удар вместо этого сносит чулан — все, кто там прятался, вылетают наружу; сбегает через 15 минут, если не убить. При нокауте — тот же 50%-шанс ограбить монеты, что у гоблина/орка (изначально у тролля 0 монет — всё, что при смерти достанется убийце, награблено за бой), плюс 50% шанс дополнительно вырвать у жертвы одно оружие (сам он им не пользуется — только своей дубиной; оружие падает в чат, забрать может кто угодно кроме самой жертвы)',
+    '/goblinraid тролль (или тролленок) — (админ) отдельный одиночный босс, не смешивается с гоблинами/орками. Тролль: 1000 ХП, сила 15, регенерирует 10 ХП каждые 10 сек, бьёт сразу троих. Тролленок (слабее): 650 ХП, сила 8, регенерирует 5 ХП каждые 40 сек, бьёт сразу двоих. У обоих: точность 4, уворот 1, энергия бесконечная; бьёт раз в 30 сек (тот же 10% шанс /fuck вместо удара, что и у гоблинов); каждый 4-й удар вместо этого сносит чулан — все, кто там прятался, вылетают наружу; сбегает через 15 минут, если не убить. При нокауте — тот же 50%-шанс ограбить монеты, что у гоблина/орка (изначально 0 монет — всё, что при смерти достанется убийце, награблено за бой), плюс 50% шанс дополнительно вырвать у жертвы одно оружие (сам не пользуется — только своей дубиной; оружие падает в чат, забрать может кто угодно кроме самой жертвы)',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
