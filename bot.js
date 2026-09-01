@@ -3598,15 +3598,20 @@ bot.onText(/\/duelaccept\b/i, (msg) => {
 });
 
 // /fuck — a warrior attempts to have sex with an opponent: 40% success,
-// costs 3 energy regardless of outcome. On success the victim gets a
-// 1-hour paralysis (see isParalyzed) — locked out of combat entirely in
-// both directions (can't attack, can't be attacked), unlike a stun which
-// only blocks attacking. Confined to "Поединки" and gated the same way
-// as /kick (both sides must be warriors, respects duel exclusivity,
-// target can't already be hidden/hospitalized/paralyzed) — same target
-// resolution as /kick/duel, including the phantom-topic-reply guard.
-const FUCK_ENERGY_COST = 2;
+// 50% nothing happens, 10% it backfires and the ATTACKER paralyzes
+// themselves instead — costs 3 energy regardless of outcome. On success
+// the victim gets a 10-40 min paralysis (see isParalyzed) — locked out
+// of combat entirely in both directions (can't attack, can't be
+// attacked), unlike a stun which only blocks attacking; the backfire
+// outcome applies that exact same paralysis to the attacker instead,
+// with no effect on the target at all. Confined to "Поединки" and gated
+// the same way as /kick (both sides must be warriors, respects duel
+// exclusivity, target can't already be hidden/hospitalized/paralyzed) —
+// same target resolution as /kick/duel, including the phantom-topic-
+// reply guard.
+const FUCK_ENERGY_COST = 3;
 const FUCK_SUCCESS_CHANCE = 0.4;
+const FUCK_SELF_ORGASM_CHANCE = 0.1;
 const FUCK_PARALYSIS_MIN_MINUTES = 10;
 const FUCK_PARALYSIS_MAX_MINUTES = 40;
 const FUCK_XP_GAIN = 3;
@@ -3697,7 +3702,8 @@ bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
 
   consumeEnergy(msg.from.id, FUCK_ENERGY_COST);
 
-  if (Math.random() < FUCK_SUCCESS_CHANCE) {
+  const outcomeRoll = Math.random();
+  if (outcomeRoll < FUCK_SUCCESS_CHANCE) {
     const paralysisMinutes = rollFuckParalysisMinutes();
     const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
     db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, target.id);
@@ -3706,6 +3712,18 @@ bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     await bot.sendMessage(
       msg.chat.id,
       `😳 ${actorLabel} трахает ${targetLabel}! ${targetLabel} получает мощнейший оргазм и парализован(а) на ${paralysisMinutes} мин — не может ни бить, ни быть избитым(ой).`,
+      threadOpts(msg)
+    ).catch(() => {});
+  } else if (outcomeRoll < FUCK_SUCCESS_CHANCE + FUCK_SELF_ORGASM_CHANCE) {
+    // Backfire — the attacker gets too excited and finishes first, same
+    // paralysis effect as a normal success but landing on THEM instead;
+    // target is untouched, no XP either (this is a bad outcome).
+    const paralysisMinutes = rollFuckParalysisMinutes();
+    const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
+    db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, msg.from.id);
+    await bot.sendMessage(
+      msg.chat.id,
+      `😳💦 ${actorLabel} не сдержался(-лась) и словил(а) оргазм раньше времени! Сам(а) парализован(а) на ${paralysisMinutes} мин.`,
       threadOpts(msg)
     ).catch(() => {});
   } else {
@@ -5034,7 +5052,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/box <код> — угадать 3-значный код запертого ящика (см. объявление в чате); 1 попытка в час; каждая неверная попытка показывает одну и ту же подсказку — какая по счёту цифра заклинила и чему она равна; что внутри — секрет до правильной угадки',
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
-    '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% шанс, тратит 2 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на 10-40 мин (не может ни бить, ни быть избитой), провал — просто сообщение',
+    '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% успех, 50% провал, 10% сам(а) не сдержался(-лась); тратит 3 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на 10-40 мин (не может ни бить, ни быть избитой); провал — просто сообщение; на 10% атакующий сам(а) парализуется на 10-40 мин, жертву не трогает',
     '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: разведка выходит дважды в день, в случайный момент 08:00-12:00 и ещё раз 18:00-22:00 (15 минут — не зачистили, оставшиеся сбегают); ровно через 10 минут после конца каждой разведки — если зачистили, усиленная разведка ×1.5 (10 минут); если кто-то сбежал — случайно рейд (40%), атака (40%) или нашествие (20%), без ограничения по времени',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
@@ -5939,19 +5957,20 @@ function bleedTick() {
       // called from performKick, already gated to that chat) — but it's
       // the group's chat_id, not "Поединки" the topic, so every message
       // here still needs message_thread_id spelled out explicitly.
+      const label = labelForUserId(row.user_id);
       if (row.bleed_until <= now) {
         db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL WHERE user_id = ?').run(row.user_id);
-        bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось само.', { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
+        bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение у ${label} остановилось само.`, { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
         continue;
       }
       if (row.health === 0) continue;
       const before = row.health;
       const after = damageHuman(row.user_id, row.bleed_chat_id, null, 1);
-      bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение: -1 хп (${before} -> ${after})`, { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
+      bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение у ${label}: -1 хп (${before} -> ${after})`, { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
       if (!row.last_bleed_stop_attempt_at || now - row.last_bleed_stop_attempt_at >= BLEED_STOP_ROLL_INTERVAL_SECONDS) {
         if (Math.random() < 0.5) {
           db.prepare('UPDATE user_health SET bleed_until = NULL, bleed_chat_id = NULL, last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
-          bot.sendMessage(row.bleed_chat_id, '🩸 Кровотечение остановилось.', { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
+          bot.sendMessage(row.bleed_chat_id, `🩸 Кровотечение у ${label} остановилось.`, { message_thread_id: ARENA_TOPIC_ID }).catch(() => {});
         } else {
           db.prepare('UPDATE user_health SET last_bleed_stop_attempt_at = ? WHERE user_id = ?').run(now, row.user_id);
         }
