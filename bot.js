@@ -311,6 +311,17 @@ try {
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN tree_until INTEGER');
 } catch {}
+// Ссаные тапки's 20%-on-hit "scare" proc (see performKick's
+// weapon.key === 'tapki' block) — unlike every other status here, this
+// one is scoped to a SPECIFIC person (scared_of_user_id), not "can't be
+// attacked by anyone": the scared person just can't swing at that one
+// person for a few minutes, everyone else is still fair game. See
+// isScaredOf below.
+for (const [column, def] of [['scared_of_user_id', 'INTEGER'], ['scared_until', 'INTEGER']]) {
+  try {
+    db.exec(`ALTER TABLE user_health ADD COLUMN ${column} ${def}`);
+  } catch {}
+}
 // Bat's 30%-on-hit stun (see performKick's weapon.key === 'bat' block) —
 // while active, the stunned person's own /kick refuses outright, same
 // idiom as isHidden below (a plain lazy timestamp read, no separate
@@ -552,6 +563,13 @@ try {
 try {
   db.exec('ALTER TABLE weapon_ownership ADD COLUMN expires_at INTEGER');
 } catch {}
+// Тапки's temporary "ссаные" state (see /piss_tapki and isTapkiSoiled
+// below) — only ever meaningful for weapon_key = 'tapki', NULL for every
+// other row forever, same sparse-column idiom as expires_at above (only
+// meaningful for 'knife'... now retired there too, but the idiom holds).
+try {
+  db.exec('ALTER TABLE weapon_ownership ADD COLUMN tapki_soiled_until INTEGER');
+} catch {}
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('bat', 'ANOKI5', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('axe', 'InternalFun', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('scissors', 'AliyaKuzAli', 'human', NULL, NULL)").run();
@@ -563,6 +581,7 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('claws', 'Tenek_82', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('tapki', 'Original_Pofig', 'human', NULL, NULL)").run();
 // One-time (per boot, but INSERT OR IGNORE so it never overwrites a
 // known_users row already populated live from a real message — see the
 // main message handler) backfill for /find: known_users only starts
@@ -1665,6 +1684,15 @@ const WEAPON_DEFS = {
   // /fuck on a random warrior, and a 2-tick delayed poison. Also the only
   // weapon that unlocks a command (/tree) for its current holder.
   claws: { name: 'когти Лимы', instrumental: 'когтями Лимы', accusative: 'когти Лимы', multiplier: 1.5, emoji: '🐾' },
+  // Тапки — a physical pair, so its holder swings twice as often as any
+  // other weapon (see the weapon.key === 'tapki' cooldown-halving in
+  // performKick/performKickGoblin), clean or soiled. multiplier here is
+  // the clean baseline (0.7); while isTapkiSoiled() is true (see
+  // /piss_tapki), performKick overrides weapon.multiplier to 1 and
+  // weapon.text to the ссаные flavor for that swing, and unlocks the
+  // 3 independent 20% procs (stun/scare/throw) — none of that lives in
+  // this static def since it's time-based, not a fixed property.
+  tapki: { name: 'тапки', instrumental: 'тапками', accusative: 'тапки', multiplier: 0.7, emoji: '🥿' },
 };
 
 // Claws' own flavor line on a landed hit (see the weapon.key === 'claws'
@@ -1809,6 +1837,29 @@ function isInTree(userId) {
   if (!row || !row.tree_until) return false;
   if (row.tree_until * 1000 > Date.now()) return true;
   db.prepare('UPDATE user_health SET tree_until = NULL WHERE user_id = ?').run(userId);
+  return false;
+}
+
+// Тапки's temporary "ссаные" state (see /piss_tapki below and
+// WEAPON_DEFS.tapki) — global to the weapon itself, not per-user (there's
+// only ever one pair of tapki), so this reads weapon_ownership directly
+// rather than user_health. Pure lazy check, no clearing needed — a stale
+// past timestamp just compares false forever, same as every *_until
+// column elsewhere that isn't tied to a session needing finalization.
+function isTapkiSoiled() {
+  const row = db.prepare("SELECT tapki_soiled_until FROM weapon_ownership WHERE weapon_key = 'tapki'").get();
+  return !!row && !!row.tapki_soiled_until && row.tapki_soiled_until * 1000 > Date.now();
+}
+
+// Ссаные тапки's "scare" proc — is userId currently too scared to swing
+// at specifically ofUserId? Lazily clears once expired, same
+// check-and-clear idiom as isHidden/isInTree.
+function isScaredOf(userId, ofUserId) {
+  const row = db.prepare('SELECT scared_of_user_id, scared_until FROM user_health WHERE user_id = ?').get(userId);
+  if (!row || !row.scared_of_user_id || !row.scared_until) return false;
+  if (row.scared_of_user_id !== ofUserId) return false;
+  if (row.scared_until * 1000 > Date.now()) return true;
+  db.prepare('UPDATE user_health SET scared_of_user_id = NULL, scared_until = NULL WHERE user_id = ?').run(userId);
   return false;
 }
 
@@ -2235,6 +2286,46 @@ bot.onText(/\/tree\b/, (msg) => {
   const treeUntil = Math.floor((Date.now() + TREE_DURATION_MS) / 1000);
   db.prepare('UPDATE user_health SET tree_until = ? WHERE user_id = ?').run(treeUntil, msg.from.id);
   bot.sendMessage(msg.chat.id, `🌳 ${actorLabel} взбирается на дерево и прячется там 5 минут.`, threadOpts(msg)).catch(() => {});
+});
+
+// /piss_tapki (see WEAPON_DEFS.tapki/isTapkiSoiled) — exclusive to
+// whoever currently holds тапки. Temporary, not a one-way upgrade: 10
+// minutes of ссаные тапки (1x multiplier + the 3 procs, see
+// performKick's weapon.key === 'tapki' block), then it reverts to plain
+// тапки (0.7x, no procs) on its own. 1 energy, own 20-min cooldown
+// (separate from hideCooldowns/pvpCooldowns — gates re-triggering this
+// specific command, not attacking).
+const PISS_TAPKI_ENERGY_COST = 1;
+const PISS_TAPKI_COOLDOWN_MS = 20 * 60 * 1000;
+const PISS_TAPKI_DURATION_MS = 10 * 60 * 1000;
+const pissTapkiCooldowns = new Map();
+bot.onText(/\/piss_tapki\b/, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const ownsTapki = getWeaponsFor('human', msg.from.id).some((w) => w.weapon_key === 'tapki');
+  if (!ownsTapki) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, поссать на тапки может только их владелец.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const last = pissTapkiCooldowns.get(msg.from.id);
+  const elapsed = last ? Date.now() - last : Infinity;
+  if (elapsed < PISS_TAPKI_COOLDOWN_MS) {
+    const remaining = Math.ceil((PISS_TAPKI_COOLDOWN_MS - elapsed) / 60000);
+    bot.sendMessage(msg.chat.id, `${actorLabel}, можно поссать на тапки не чаще раза в 20 минут — подожди ещё ${remaining} мин.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  getUserHealth(msg.from.id);
+  const energyRow = db.prepare(
+    'UPDATE user_health SET energy = energy - ? WHERE user_id = ? AND energy >= ? RETURNING energy'
+  ).get(PISS_TAPKI_ENERGY_COST, msg.from.id, PISS_TAPKI_ENERGY_COST);
+  if (!energyRow) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  pissTapkiCooldowns.set(msg.from.id, Date.now());
+  const soiledUntil = Math.floor((Date.now() + PISS_TAPKI_DURATION_MS) / 1000);
+  db.prepare("UPDATE weapon_ownership SET tapki_soiled_until = ? WHERE weapon_key = 'tapki'").run(soiledUntil);
+  bot.sendMessage(msg.chat.id, `🥿💦 ${actorLabel} писает на тапки — теперь это ссаные тапки на 10 минут!`, threadOpts(msg)).catch(() => {});
 });
 
 // /find — lists every fighter that has ever appeared in user_health (has
@@ -2880,6 +2971,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     bot.sendMessage(chatId, `${targetLabel} сейчас на дуэли — нельзя вмешиваться.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
+  if (isScaredOf(attacker.id, target.id)) {
+    bot.sendMessage(chatId, `${actorLabel}, ты до смерти напуган(а) ссаным тапком ${targetLabel} — не подходи ещё немного!`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
   if (isHidden(target.id)) {
     bot.sendMessage(chatId, `${targetLabel} прячется в чулане — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
     return;
@@ -2959,7 +3054,18 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   // instance-design.md — the benefit is redundancy/tradeability, not
   // faster attacks).
   const weapon = pickWeaponForAttacker('human', attacker.id, slot, PVP_WEAPONS);
-  const effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, PVP_COOLDOWN_MS * (1 - attackerStats.agility * AGILITY_COOLDOWN_PER_POINT));
+  let effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, PVP_COOLDOWN_MS * (1 - attackerStats.agility * AGILITY_COOLDOWN_PER_POINT));
+  // Тапки — a physical pair swings twice as often as any other weapon,
+  // clean or soiled (see WEAPON_DEFS.tapki); soiled additionally swaps
+  // in the higher multiplier and flavor text right here, so every
+  // downstream read (damage calc, the hit line itself) picks it up.
+  if (weapon.key === 'tapki') {
+    effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, effectiveCooldownMs / 2);
+    if (isTapkiSoiled()) {
+      weapon.multiplier = 1;
+      weapon.text = 'ссаными тапками';
+    }
+  }
   const cooldownRemaining = checkPvpCooldown(attacker.id, weapon.key, effectiveCooldownMs);
   if (cooldownRemaining > 0) {
     bot.sendMessage(
@@ -3251,6 +3357,50 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
           const after = damageHuman(target.id, chatId, target.username || target.firstName, poisonDmg);
           bot.sendMessage(chatId, `☠️ Яд когтей: -${poisonDmg} хп у ${targetLabel} (${before} -> ${after})`, threadOpts(msgLike)).catch(() => {});
         }, delayMs);
+      }
+    }
+  }
+
+  // Ссаные тапки's 3 independent 20% procs — clean тапки (isTapkiSoiled
+  // false) gets none of this, just the flat 0.7x multiplier and doubled
+  // attack rate from the weapon.key === 'tapki' block up above.
+  if (weapon.key === 'tapki' && isTapkiSoiled()) {
+    if (Math.random() < 0.2) {
+      const stunnedUntil = Math.floor(Date.now() / 1000) + 2 * 60;
+      db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+      await bot.sendMessage(chatId, `🥿😵 ${actorLabel} оглушил(а) ${targetLabel} ссаным тапком! Не сможет атаковать 2 минуты.`, threadOpts(msgLike)).catch(() => {});
+    }
+
+    if (Math.random() < 0.2) {
+      // Scare — unlike a stun, this doesn't block the target from
+      // attacking anyone in general, only THIS specific attacker (see
+      // isScaredOf and its gate up near the duel-exclusivity checks).
+      const scaredUntil = Math.floor(Date.now() / 1000) + 3 * 60;
+      db.prepare('UPDATE user_health SET scared_of_user_id = ?, scared_until = ? WHERE user_id = ?').run(attacker.id, scaredUntil, target.id);
+      await bot.sendMessage(chatId, `🥿😱 ${actorLabel} напугал(а) ${targetLabel} ссаным тапком! ${targetLabel} не сможет ударить ${actorLabel} 3 минуты.`, threadOpts(msgLike)).catch(() => {});
+    }
+
+    if (Math.random() < 0.2) {
+      // Throw — a stray flying tapok reaches someone normally
+      // unreachable (hidden/treed/hospitalized), bypassing all three
+      // protections at once. Fully independent of the main hit above:
+      // its own fresh damage roll, on a completely different random
+      // victim, target untouched.
+      const candidates = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all()
+        .map((r) => r.user_id)
+        .filter((id) => isHidden(id) || isInTree(id) || isHospitalized(id));
+      if (candidates.length > 0) {
+        const flungAtId = candidates[Math.floor(Math.random() * candidates.length)];
+        const flungAtLabel = labelForUserId(flungAtId);
+        const rawThrowDmg = Math.floor(Math.random() * 20) + 1;
+        const throwDmg = Math.round(rawThrowDmg * weapon.multiplier * strengthFactor * armInjuryFactor);
+        const flungHealthBefore = getUserHealth(flungAtId).health;
+        const flungHealthAfter = damageHuman(flungAtId, chatId, null, throwDmg);
+        await bot.sendMessage(
+          chatId,
+          `🥿💥 ${actorLabel} кинул(а) ссаный тапок — прилетело ${flungAtLabel}, хоть и прятался(-лась)! Урон: ${throwDmg} (${flungHealthBefore} -> ${flungHealthAfter})`,
+          threadOpts(msgLike)
+        ).catch(() => {});
       }
     }
   }
@@ -3850,7 +4000,18 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
   const attackerInjury = getUserInjury(attacker.id);
   const attackerStats = getStats(attacker.id);
   const weapon = pickWeaponForAttacker('human', attacker.id, slot, PVP_WEAPONS);
-  const effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, PVP_COOLDOWN_MS * (1 - attackerStats.agility * AGILITY_COOLDOWN_PER_POINT));
+  let effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, PVP_COOLDOWN_MS * (1 - attackerStats.agility * AGILITY_COOLDOWN_PER_POINT));
+  // Тапки — a physical pair swings twice as often as any other weapon,
+  // clean or soiled (see WEAPON_DEFS.tapki); soiled additionally swaps
+  // in the higher multiplier and flavor text right here, so every
+  // downstream read (damage calc, the hit line itself) picks it up.
+  if (weapon.key === 'tapki') {
+    effectiveCooldownMs = Math.max(MIN_PVP_COOLDOWN_MS, effectiveCooldownMs / 2);
+    if (isTapkiSoiled()) {
+      weapon.multiplier = 1;
+      weapon.text = 'ссаными тапками';
+    }
+  }
   const cooldownRemaining = checkPvpCooldown(attacker.id, weapon.key, effectiveCooldownMs);
   if (cooldownRemaining > 0) {
     bot.sendMessage(
@@ -5043,6 +5204,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 20-180 минут (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup; во время набега гоблинов (/goblinraid) им можно бить и их — см. /goblins)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/tree — залезть на дерево и спрятаться от /kick на 5 минут; доступно только текущему владельцу когтей Лимы; тратит 1 энергию, без своего кулдауна (кроме нехватки энергии); своя атака снимает и слезает с дерева',
+    '/piss_tapki — доступно только текущему владельцу тапок: превращает их в ссаные тапки на 10 минут, потом сами возвращаются в обычные; тратит 1 энергию, кулдаун 20 мин',
     '/find — список всех бойцов: 🏥 сначала те, кто в больничке, затем 🐰 те, кто в чулане, затем 🌳 те, кто на дереве (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (уровни 1-9 по 100 опыта каждый, дальше каждый следующий на 10% дороже предыдущего: 110, 121, 133...; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100, +3 за успешный /fuck); сила также даёт +5 к максимуму ХП за очко, выносливость — +1 к максимуму энергии за очко',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
