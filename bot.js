@@ -3723,7 +3723,7 @@ bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
     db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, msg.from.id);
     await bot.sendMessage(
       msg.chat.id,
-      `😳💦 ${actorLabel} не сдержался(-лась) и словил(а) оргазм раньше времени! Сам(а) парализован(а) на ${paralysisMinutes} мин.`,
+      `😳💦 ${actorLabel} занимается сексом с ${targetLabel}, но не сдержался(-лась) и словил(а) оргазм раньше времени! Сам(а) парализован(а) на ${paralysisMinutes} мин.`,
       threadOpts(msg)
     ).catch(() => {});
   } else {
