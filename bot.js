@@ -1440,16 +1440,16 @@ function spawnMonster(type, indexWithinType) {
 
 // Ends the raid once every monster is dead: stops the tick (and the
 // flee timer, if this raid had one), announces victory, and clears both
-// module-level maps so nothing lingers for the next raid. If this was
-// the scheduled morning recon, records the 'cleared' outcome the
-// afternoon schedule reads to decide what happens next (see
-// scheduledRaidTick below).
+// module-level maps so nothing lingers for the next raid. If this was a
+// scheduled recon (morning or evening), queues the follow-up raid for 10
+// minutes from now with the 'cleared' outcome (see scheduleReconFollowUp
+// below).
 function checkGoblinRaidCleared() {
   if (!goblinRaid || [...goblinRaid.goblins.values()].some((g) => g.health > 0)) return;
   clearInterval(goblinRaid.tickTimer);
   if (goblinRaid.fleeTimer) clearTimeout(goblinRaid.fleeTimer);
-  if (goblinRaid.autoKind === 'morning-recon') {
-    db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('goblin_recon_outcome', 'cleared')").run();
+  if (goblinRaid.autoKind === 'morning-recon' || goblinRaid.autoKind === 'evening-recon') {
+    scheduleReconFollowUp('cleared', goblinRaid.chatId, goblinRaid.threadId);
   }
   bot.sendMessage(
     goblinRaid.chatId,
@@ -1462,18 +1462,20 @@ function checkGoblinRaidCleared() {
 
 // Ends a timed raid (see launchScheduledRaid's durationMs) when its
 // clock runs out with monsters still alive — they flee: removed from
-// play with no loot, no death message, raid over. If this was the
-// scheduled morning recon, records the 'fled' outcome for the afternoon
-// schedule (see scheduledRaidTick below) — the counterpart to
-// checkGoblinRaidCleared's 'cleared' outcome.
+// play with no loot, no death message, raid over. If this was a
+// scheduled recon (morning or evening), queues the follow-up raid for 10
+// minutes from now with the 'fled' outcome — the counterpart to
+// checkGoblinRaidCleared's 'cleared' case (see scheduleReconFollowUp
+// below).
 function endGoblinRaidByFlee() {
   if (!goblinRaid) return;
   const survivors = [...goblinRaid.goblins.values()].filter((g) => g.health > 0);
   clearInterval(goblinRaid.tickTimer);
   const chatId = goblinRaid.chatId;
-  const threadOpt = goblinRaid.threadId ? { message_thread_id: goblinRaid.threadId } : {};
-  if (goblinRaid.autoKind === 'morning-recon') {
-    db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('goblin_recon_outcome', 'fled')").run();
+  const threadId = goblinRaid.threadId;
+  const threadOpt = threadId ? { message_thread_id: threadId } : {};
+  if (goblinRaid.autoKind === 'morning-recon' || goblinRaid.autoKind === 'evening-recon') {
+    scheduleReconFollowUp('fled', chatId, threadId);
   }
   goblinMessageIds.clear();
   goblinRaid = null;
@@ -4896,7 +4898,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/duel @username [ставка] (или ответом) — вызвать на дуэль 1 на 1; у цели 2 минуты на /duelaccept; пока дуэль идёт — вы двое можете /kick только друг друга, никто третий не вмешается, эликсиры под запретом; конец — чья-то смерть или 5 минут (тогда побеждает тот, у кого больше HP, ровно поровну — ничья); указанную ставку монет платят оба поровну, победитель забирает весь банк (ничья — ставки возвращаются)',
     '/duelaccept — принять вызов на дуэль (см. /duel)',
     '/fuck @username (или ответом) — попытка трахнуть оппонента: 40% шанс, тратит 2 энергии в любом случае; успех — +3 опыта атакующему, жертва получает оргазм и парализована на 10-40 мин (не может ни бить, ни быть избитой), провал — просто сообщение',
-    '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: каждое утро в случайный момент 08:00-12:00 сама выходит разведка (15 минут — не зачистили, оставшиеся сбегают), а после обеда в 13:00-18:00 либо усиленная разведка ×1.5 (если утреннюю зачистили, 10 минут), либо рейд без ограничения по времени (если кто-то сбежал)',
+    '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: разведка выходит дважды в день, в случайный момент 08:00-12:00 и ещё раз 18:00-22:00 (15 минут — не зачистили, оставшиеся сбегают); ровно через 10 минут после конца каждой разведки — если зачистили, усиленная разведка ×1.5 (10 минут); если кто-то сбежал — случайно рейд (40%), атака (40%) или нашествие (20%), без ограничения по времени',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
     '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
@@ -5626,22 +5628,27 @@ setInterval(arenaTick, HEALTH_REGEN_TICK_MS);
 // above — arenaTick no-ops on its own if nothing's actually due yet.
 setTimeout(arenaTick, 60 * 1000);
 
-// Auto raid schedule: a "разведка" fires once each morning at a random
-// moment within 08:00-12:00, standing for GOBLIN_RECON_DURATION_MS —
-// any monster still alive when that runs out flees (see
-// endGoblinRaidByFlee), no loot, raid just ends. What fires once each
-// afternoon (13:00-18:00) depends on how that recon ended (see
-// 'goblin_recon_outcome', written by checkGoblinRaidCleared/
-// endGoblinRaidByFlee): fully cleared -> a reinforced "усиленная
-// разведка" (×1.5 the goblin count, a bit less time); not cleared
-// (someone fled) -> a plain "рейд" with no time limit, same as manually
-// running /goblinraid рейд. Each window fires at most once per calendar
-// day (tracked in bot_settings so a restart mid-window can't refire
-// something that already happened), and never overlaps an already-
-// running raid — manual or scheduled — since scheduledRaidTick just
-// skips its check entirely while goblinRaid is set, and tries again on
-// the next tick.
-// The exact firing moment inside each window uses the standard
+// Auto raid schedule: a "разведка" fires twice a day — once at a random
+// moment within 08:00-12:00 (morning) and again within 18:00-22:00
+// (evening) — each standing for GOBLIN_RECON_DURATION_MS; any monster
+// still alive when that runs out flees (see endGoblinRaidByFlee), no
+// loot, raid just ends. Exactly RAID_FOLLOWUP_DELAY_MS after EACH recon
+// concludes (cleared or fled — see checkGoblinRaidCleared/
+// endGoblinRaidByFlee), scheduleReconFollowUp below fires the follow-up:
+// fully cleared -> a reinforced "усиленная разведка" (×1.5 the goblin
+// count, a bit less time); not cleared (someone fled) -> a weighted-random
+// escalation (see pickFledFollowUpTier) instead of always a plain "рейд",
+// so orcs (only in 'атака'/'нашествие') actually show up sometimes
+// without needing an admin to type /goblinraid by hand.
+// Each recon window fires at most once per calendar day (tracked in
+// bot_settings so a restart mid-window can't refire something that
+// already happened), and never overlaps an already-running raid — manual
+// or scheduled — since scheduledRaidTick just skips its check entirely
+// while goblinRaid is set, and tries again on the next tick. The
+// follow-up's own 10-minute timer applies the same guard at fire time
+// (see scheduleReconFollowUp) rather than retrying — if something else
+// is running right at that moment, the follow-up is simply skipped.
+// The exact firing moment inside each recon window uses the standard
 // "reservoir" trick: every tick's fire probability is
 // 1/remaining-ticks-in-window, so across the whole window the actual
 // moment ends up uniformly distributed without ever precomputing or
@@ -5650,6 +5657,18 @@ setTimeout(arenaTick, 60 * 1000);
 const RAID_SCHEDULE_TICK_MS = 5 * 60 * 1000;
 const GOBLIN_RECON_DURATION_MS = 15 * 60 * 1000;
 const REINFORCED_RECON_DURATION_MS = 10 * 60 * 1000;
+const RAID_FOLLOWUP_DELAY_MS = 10 * 60 * 1000;
+
+// Weighted escalation for a recon that ended in someone fleeing — 40%
+// рейд (no orcs), 40% атака (1-2 orcs), 20% нашествие (2-5 orcs). Plain
+// cumulative-threshold roll, same idiom as the fuck/goblin-attempt checks
+// elsewhere in this file.
+function pickFledFollowUpTier() {
+  const roll = Math.random();
+  if (roll < 0.4) return 'рейд';
+  if (roll < 0.8) return 'атака';
+  return 'нашествие';
+}
 
 function localDateString(d) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -5688,6 +5707,31 @@ function launchScheduledRaid(chatId, threadId, label, goblinCount, orcCount, dur
   ).catch(() => {});
 }
 
+// Fires RAID_FOLLOWUP_DELAY_MS after a scheduled recon concludes (see
+// checkGoblinRaidCleared/endGoblinRaidByFlee) — 'cleared' escalates to a
+// reinforced recon, 'fled' rolls pickFledFollowUpTier's weighted tier.
+// Skips silently (no retry) if PvP is paused or another raid is already
+// running by the time the timer fires — same "never overlap" rule as
+// scheduledRaidTick's own guard, just checked once at fire time instead
+// of on a recurring tick.
+function scheduleReconFollowUp(outcome, chatId, threadId) {
+  setTimeout(() => {
+    if (isPvpPaused() || goblinRaid) return;
+    if (outcome === 'cleared') {
+      const baseCount = randIntInclusive(RAID_TIERS['разведка'].goblins[0], RAID_TIERS['разведка'].goblins[1]);
+      const goblinCount = Math.round(baseCount * 1.5);
+      launchScheduledRaid(chatId, threadId, 'Усиленная разведка', goblinCount, 0, REINFORCED_RECON_DURATION_MS, 'auto-followup');
+    } else {
+      const tierName = pickFledFollowUpTier();
+      const tier = RAID_TIERS[tierName];
+      const goblinCount = randIntInclusive(tier.goblins[0], tier.goblins[1]);
+      const orcCount = randIntInclusive(tier.orcs[0], tier.orcs[1]);
+      const label = tierName.charAt(0).toUpperCase() + tierName.slice(1);
+      launchScheduledRaid(chatId, threadId, label, goblinCount, orcCount, null, 'auto-followup');
+    }
+  }, RAID_FOLLOWUP_DELAY_MS);
+}
+
 function scheduledRaidTick() {
   if (isPvpPaused() || goblinRaid) return;
   const now = new Date();
@@ -5706,27 +5750,35 @@ function scheduledRaidTick() {
         launchScheduledRaid(ARENA_CHAT_ID, ARENA_TOPIC_ID, 'Утренняя разведка', goblinCount, 0, GOBLIN_RECON_DURATION_MS, 'morning-recon');
       }
     }
-  } else if (hour >= 13 && hour < 18) {
-    const lastDate = db.prepare("SELECT value FROM bot_settings WHERE key = 'goblin_afternoon_last_date'").get();
+  } else if (hour >= 18 && hour < 22) {
+    const lastDate = db.prepare("SELECT value FROM bot_settings WHERE key = 'goblin_recon_evening_last_date'").get();
     if (!lastDate || lastDate.value !== today) {
-      const remainingMinutes = 18 * 60 - (hour * 60 + minute);
+      const remainingMinutes = 22 * 60 - (hour * 60 + minute);
       const remainingTicks = Math.max(1, Math.ceil(remainingMinutes / (RAID_SCHEDULE_TICK_MS / 60000)));
       if (Math.random() < 1 / remainingTicks) {
-        db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('goblin_afternoon_last_date', ?)").run(today);
-        const outcome = db.prepare("SELECT value FROM bot_settings WHERE key = 'goblin_recon_outcome'").get();
-        if (outcome && outcome.value === 'cleared') {
-          const baseCount = randIntInclusive(RAID_TIERS['разведка'].goblins[0], RAID_TIERS['разведка'].goblins[1]);
-          const goblinCount = Math.round(baseCount * 1.5);
-          launchScheduledRaid(ARENA_CHAT_ID, ARENA_TOPIC_ID, 'Усиленная разведка', goblinCount, 0, REINFORCED_RECON_DURATION_MS, 'afternoon');
-        } else {
-          const goblinCount = randIntInclusive(RAID_TIERS['рейд'].goblins[0], RAID_TIERS['рейд'].goblins[1]);
-          launchScheduledRaid(ARENA_CHAT_ID, ARENA_TOPIC_ID, 'Рейд', goblinCount, 0, null, 'afternoon');
-        }
+        db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('goblin_recon_evening_last_date', ?)").run(today);
+        const goblinCount = randIntInclusive(RAID_TIERS['разведка'].goblins[0], RAID_TIERS['разведка'].goblins[1]);
+        launchScheduledRaid(ARENA_CHAT_ID, ARENA_TOPIC_ID, 'Вечерняя разведка', goblinCount, 0, GOBLIN_RECON_DURATION_MS, 'evening-recon');
       }
     }
   }
 }
 setInterval(scheduledRaidTick, RAID_SCHEDULE_TICK_MS);
+
+// One-time "welcome the orcs" invasion for this deploy — fires once, 5
+// minutes after the first boot following this deploy, never again after
+// that (even across later restarts), same runOnce+delayed-setTimeout
+// idiom as the /box drop announcement above. Skips silently if a raid is
+// somehow already running by the time the timer fires.
+runOnce('2026-09-01-orc-invasion-launch', () => {
+  setTimeout(() => {
+    if (isPvpPaused() || goblinRaid) return;
+    const tier = RAID_TIERS['нашествие'];
+    const goblinCount = randIntInclusive(tier.goblins[0], tier.goblins[1]);
+    const orcCount = randIntInclusive(tier.orcs[0], tier.orcs[1]);
+    launchScheduledRaid(ARENA_CHAT_ID, ARENA_TOPIC_ID, 'Нашествие', goblinCount, orcCount, null, 'deploy-invasion');
+  }, 5 * 60 * 1000);
+});
 
 // Bleed tick (see applyBleed and every `weapon.key === 'scissors'` call
 // site) — 1-minute granularity because the mechanic itself is 1 HP/minute,
