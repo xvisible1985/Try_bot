@@ -301,6 +301,16 @@ try {
 try {
   db.exec('ALTER TABLE user_health ADD COLUMN hidden_since INTEGER');
 } catch {}
+// /tree (see the PvP section below, and WEAPON_DEFS.claws) — a second,
+// independent "can't be targeted" status alongside hidden_until, only
+// reachable by whoever currently holds когти Лимы. Deliberately its own
+// column rather than reusing hidden_until: /hide's чулан has a 5-person
+// capacity and its own 20-min self-cooldown, neither of which apply
+// here, and the two are meant to stack (a person can be both hidden and
+// treed at once) rather than share one timer.
+try {
+  db.exec('ALTER TABLE user_health ADD COLUMN tree_until INTEGER');
+} catch {}
 // Bat's 30%-on-hit stun (see performKick's weapon.key === 'bat' block) —
 // while active, the stunned person's own /kick refuses outright, same
 // idiom as isHidden below (a plain lazy timestamp read, no separate
@@ -552,6 +562,7 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 // owner_user_id is populated immediately and seed_username stays NULL.
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('crutch', NULL, 'human', 736180284, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('claws', 'Tenek_82', 'human', NULL, NULL)").run();
 // One-time (per boot, but INSERT OR IGNORE so it never overwrites a
 // known_users row already populated live from a real message — see the
 // main message handler) backfill for /find: known_users only starts
@@ -1408,7 +1419,7 @@ function pickEligibleGoblinTarget() {
   const rows = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all();
   const eligible = rows
     .map((r) => r.user_id)
-    .filter((id) => !isHidden(id) && !isHospitalized(id) && !isParalyzed(id) && getUserHealth(id).health > 0);
+    .filter((id) => !isHidden(id) && !isInTree(id) && !isHospitalized(id) && !isParalyzed(id) && getUserHealth(id).health > 0);
   if (eligible.length === 0) return null;
   return eligible[Math.floor(Math.random() * eligible.length)];
 }
@@ -1500,7 +1511,7 @@ async function goblinTick() {
       goblin.targetUserId = pickEligibleGoblinTarget();
       if (!goblin.targetUserId) continue;
     }
-    if (isHidden(goblin.targetUserId) || isHospitalized(goblin.targetUserId) || isParalyzed(goblin.targetUserId) || getUserHealth(goblin.targetUserId).health === 0) {
+    if (isHidden(goblin.targetUserId) || isInTree(goblin.targetUserId) || isHospitalized(goblin.targetUserId) || isParalyzed(goblin.targetUserId) || getUserHealth(goblin.targetUserId).health === 0) {
       continue; // waits for its locked target to become reachable again, never re-targets on its own
     }
     goblin.energy -= 1;
@@ -1649,7 +1660,24 @@ const WEAPON_DEFS = {
   // own damage per hole — multiplier: 1 here is the same NaN-guard
   // fallback carrot has just above, for performKickGoblin's benefit.
   dildo: { name: 'оранжевый дилдо', instrumental: 'оранжевым дилдо', accusative: 'оранжевый дилдо', multiplier: 1, emoji: '🍆' },
+  // Когти Лимы — flat 1.5x like bat, plus two independent 20%-on-hit
+  // procs (see the weapon.key === 'claws' block in performKick): forced
+  // /fuck on a random warrior, and a 2-tick delayed poison. Also the only
+  // weapon that unlocks a command (/tree) for its current holder.
+  claws: { name: 'когти Лимы', instrumental: 'когтями Лимы', accusative: 'когти Лимы', multiplier: 1.5, emoji: '🐾' },
 };
+
+// Claws' own flavor line on a landed hit (see the weapon.key === 'claws'
+// block in performKick) — {target} is a plain string replace, same
+// idiom as every {user}-style placeholder elsewhere in this file.
+const CLAW_HIT_PHRASES = [
+  'расцарапала {target} лицо в кровь',
+  'прошлась когтями по соскам {target} — те горят огнём',
+  'разодрала {target} член когтями',
+  'вцепилась когтями {target} в попу — рваные царапины',
+  'чиркнула когтями {target} по шее',
+  'оставила глубокие кровавые борозды на спине {target}',
+];
 
 function getUserInjury(userId) {
   const row = db.prepare('SELECT injury_type, injured_until FROM injuries WHERE user_id = ?').get(userId);
@@ -1770,6 +1798,17 @@ function isHidden(userId) {
   if (!row || !row.hidden_until) return false;
   if (row.hidden_until * 1000 > Date.now()) return true;
   endHideSession(userId, row.hidden_until);
+  return false;
+}
+
+// /tree protection (see WEAPON_DEFS.claws and /tree below) — pure lazy
+// read-and-clear, same idiom as isHidden but no session/stats tracking:
+// climbing a tree isn't tallied anywhere the way чулан time is.
+function isInTree(userId) {
+  const row = db.prepare('SELECT tree_until FROM user_health WHERE user_id = ?').get(userId);
+  if (!row || !row.tree_until) return false;
+  if (row.tree_until * 1000 > Date.now()) return true;
+  db.prepare('UPDATE user_health SET tree_until = NULL WHERE user_id = ?').run(userId);
   return false;
 }
 
@@ -2076,6 +2115,11 @@ bot.onText(/\/me\b/, (msg) => {
     lines.push(`🐰 Прячешься в чулане (осталось ${formatExpire(hideRow.hidden_until)})`);
   }
 
+  if (isInTree(msg.from.id)) {
+    const treeRow = db.prepare('SELECT tree_until FROM user_health WHERE user_id = ?').get(msg.from.id);
+    lines.push(`🌳 Сидишь на дереве (осталось ${formatExpire(treeRow.tree_until)})`);
+  }
+
   const stats = getStats(msg.from.id);
   const nowSec = Math.floor(Date.now() / 1000);
   // hidden_seconds only accrues once a session ENDS — while still
@@ -2165,6 +2209,34 @@ bot.onText(/\/hide(?:\s+(\d+))?\b/, (msg, match) => {
   bot.sendMessage(msg.chat.id, `🐰 ${actorLabel} прячется в чулане ${hours} ч.`, threadOpts(msg)).catch(() => {});
 });
 
+// /tree (see WEAPON_DEFS.claws) — exclusive to whoever currently holds
+// когти Лимы. Much cheaper/shorter than /hide (1 energy flat, 5 min
+// flat, no чулан-style capacity limit, no self-cooldown) since it's a
+// weapon perk, not a general-purpose PvP tool — energy itself is the
+// only throttle.
+const TREE_ENERGY_COST = 1;
+const TREE_DURATION_MS = 5 * 60 * 1000;
+bot.onText(/\/tree\b/, (msg) => {
+  if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
+  const actorLabel = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
+  const ownsClaws = getWeaponsFor('human', msg.from.id).some((w) => w.weapon_key === 'claws');
+  if (!ownsClaws) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, лезть на дерево может только владелец когтей Лимы.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  getUserHealth(msg.from.id);
+  const energyRow = db.prepare(
+    'UPDATE user_health SET energy = energy - ? WHERE user_id = ? AND energy >= ? RETURNING energy'
+  ).get(TREE_ENERGY_COST, msg.from.id, TREE_ENERGY_COST);
+  if (!energyRow) {
+    bot.sendMessage(msg.chat.id, `${actorLabel}, не хватает энергии залезть на дерево.`, threadOpts(msg)).catch(() => {});
+    return;
+  }
+  const treeUntil = Math.floor((Date.now() + TREE_DURATION_MS) / 1000);
+  db.prepare('UPDATE user_health SET tree_until = ? WHERE user_id = ?').run(treeUntil, msg.from.id);
+  bot.sendMessage(msg.chat.id, `🌳 ${actorLabel} взбирается на дерево и прячется там 5 минут.`, threadOpts(msg)).catch(() => {});
+});
+
 // /find — lists every fighter that has ever appeared in user_health (has
 // hit /kick or /hide at least once), by known_users' cached display
 // name, with their current hidden status — чулан occupants listed first.
@@ -2183,6 +2255,7 @@ bot.onText(/\/find\b/, (msg) => {
   // expired into pvp_stats before it's used for sorting/display.
   const hospitalLines = [];
   const hiddenLines = [];
+  const treeLines = [];
   const visibleLines = [];
   for (const { user_id } of fighters) {
     const known = db.prepare('SELECT username, first_name FROM known_users WHERE user_id = ?').get(user_id);
@@ -2193,11 +2266,14 @@ bot.onText(/\/find\b/, (msg) => {
     } else if (isHidden(user_id)) {
       const row = db.prepare('SELECT hidden_until FROM user_health WHERE user_id = ?').get(user_id);
       hiddenLines.push(`🐰 ${label} (ещё ${formatExpire(row.hidden_until)})`);
+    } else if (isInTree(user_id)) {
+      const row = db.prepare('SELECT tree_until FROM user_health WHERE user_id = ?').get(user_id);
+      treeLines.push(`🌳 ${label} (ещё ${formatExpire(row.tree_until)})`);
     } else {
       visibleLines.push(`⚔️ ${label}`);
     }
   }
-  const lines = ['Бойцы:', ...hospitalLines, ...hiddenLines, ...visibleLines];
+  const lines = ['Бойцы:', ...hospitalLines, ...hiddenLines, ...treeLines, ...visibleLines];
   bot.sendMessage(msg.chat.id, lines.join('\n'), threadOpts(msg)).catch(() => {});
 });
 
@@ -2808,6 +2884,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     bot.sendMessage(chatId, `${targetLabel} прячется в чулане — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
     return;
   }
+  if (isInTree(target.id)) {
+    bot.sendMessage(chatId, `${targetLabel} сидит на дереве — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
+    return;
+  }
   if (isHospitalized(target.id)) {
     bot.sendMessage(chatId, `${targetLabel} лежит в больничке — недоступен для удара.`, threadOpts(msgLike)).catch(() => {});
     return;
@@ -2893,6 +2973,10 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   if (isHidden(attacker.id)) {
     endHideSession(attacker.id, Math.floor(Date.now() / 1000));
     await bot.sendMessage(chatId, `🚪 ${actorLabel} выскакивает из чулана, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
+  }
+  if (isInTree(attacker.id)) {
+    db.prepare('UPDATE user_health SET tree_until = NULL WHERE user_id = ?').run(attacker.id);
+    await bot.sendMessage(chatId, `🌳 ${actorLabel} слезает с дерева, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
   }
   if (isHospitalized(attacker.id)) {
     db.prepare('UPDATE user_health SET hospitalized_since = NULL WHERE user_id = ?').run(attacker.id);
@@ -3124,6 +3208,51 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     const beforeShave = targetHealthAfter;
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, 10);
     await bot.sendMessage(chatId, `🪓😳 ${actorLabel} топором нечаянно побрил ${targetLabel} лобок! Ещё −10 ХП (${beforeShave} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
+  }
+
+  if (weapon.key === 'claws') {
+    const scratchPhrase = pick(CLAW_HIT_PHRASES).replace('{target}', targetLabel);
+    await bot.sendMessage(chatId, `🐾 ${actorLabel} ${scratchPhrase}!`, threadOpts(msgLike)).catch(() => {});
+
+    if (Math.random() < 0.2) {
+      // Arousal proc — forces the victim into an unwilling /fuck attempt
+      // against a random OTHER warrior. Same 40%-success/10-40-min-
+      // paralysis shape as the real /fuck command, but no energy cost
+      // (the victim didn't choose this) and no eligibility gate on the
+      // random target — this is a chaos effect, not a deliberate action.
+      const warriorIds = db.prepare('SELECT user_id FROM pvp_stats WHERE is_warrior = 1').all()
+        .map((r) => r.user_id)
+        .filter((id) => id !== target.id);
+      if (warriorIds.length > 0) {
+        const randomWarriorId = warriorIds[Math.floor(Math.random() * warriorIds.length)];
+        const randomWarriorLabel = labelForUserId(randomWarriorId);
+        if (Math.random() < FUCK_SUCCESS_CHANCE) {
+          const paralysisMinutes = rollFuckParalysisMinutes();
+          const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
+          db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, randomWarriorId);
+          ensureStatsRow(target.id);
+          db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(FUCK_XP_GAIN, target.id);
+          await bot.sendMessage(chatId, `😾🔥 Царапины возбуждают ${targetLabel}! ${targetLabel} набрасывается на ${randomWarriorLabel} — тот(та) парализован(а) на ${paralysisMinutes} мин.`, threadOpts(msgLike)).catch(() => {});
+        } else {
+          await bot.sendMessage(chatId, `😾🔥 Царапины возбуждают ${targetLabel}! ${targetLabel} набрасывается на ${randomWarriorLabel}, но ничего не вышло.`, threadOpts(msgLike)).catch(() => {});
+        }
+      }
+    }
+
+    if (Math.random() < 0.2) {
+      // Poison proc — two delayed ticks ~1 min apart, 1-10 HP each,
+      // independent of scissors' own repeating bleed drain (applyBleed).
+      await bot.sendMessage(chatId, `☠️ Когти были ядовитыми — ${targetLabel} начинает мутить!`, threadOpts(msgLike)).catch(() => {});
+      for (const delayMs of [60 * 1000, 120 * 1000]) {
+        setTimeout(() => {
+          if (getUserHealth(target.id).health === 0) return;
+          const poisonDmg = randIntInclusive(1, 10);
+          const before = getUserHealth(target.id).health;
+          const after = damageHuman(target.id, chatId, target.username || target.firstName, poisonDmg);
+          bot.sendMessage(chatId, `☠️ Яд когтей: -${poisonDmg} хп у ${targetLabel} (${before} -> ${after})`, threadOpts(msgLike)).catch(() => {});
+        }, delayMs);
+      }
+    }
   }
 
   // isCrit is tracked for stats independent of whether the injury/steal
@@ -3535,6 +3664,9 @@ bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   if (isHidden(target.id)) {
     return bot.sendMessage(msg.chat.id, `${targetLabel} прячется в чулане — недоступен(на).`, threadOpts(msg)).catch(() => {});
   }
+  if (isInTree(target.id)) {
+    return bot.sendMessage(msg.chat.id, `${targetLabel} сидит на дереве — недоступен(на).`, threadOpts(msg)).catch(() => {});
+  }
   if (isHospitalized(target.id)) {
     return bot.sendMessage(msg.chat.id, `${targetLabel} лежит в больничке — недоступен(на).`, threadOpts(msg)).catch(() => {});
   }
@@ -3714,6 +3846,10 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
   if (isHidden(attacker.id)) {
     endHideSession(attacker.id, Math.floor(Date.now() / 1000));
     await bot.sendMessage(chatId, `🚪 ${actorLabel} выскакивает из чулана, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
+  }
+  if (isInTree(attacker.id)) {
+    db.prepare('UPDATE user_health SET tree_until = NULL WHERE user_id = ?').run(attacker.id);
+    await bot.sendMessage(chatId, `🌳 ${actorLabel} слезает с дерева, чтобы напасть!`, threadOpts(msgLike)).catch(() => {});
   }
   if (isHospitalized(attacker.id)) {
     db.prepare('UPDATE user_health SET hospitalized_since = NULL WHERE user_id = ?').run(attacker.id);
@@ -4888,7 +5024,8 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/give @username — передать эликсир или оружие другому воину (с его подтверждением)',
     '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 20-180 минут (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup; во время набега гоблинов (/goblinraid) им можно бить и их — см. /goblins)',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
-    '/find — список всех бойцов: 🏥 сначала те, кто в больничке, затем 🐰 те, кто в чулане (с оставшимся временем), затем ⚔️ остальные',
+    '/tree — залезть на дерево и спрятаться от /kick на 5 минут; доступно только текущему владельцу когтей Лимы; тратит 1 энергию, без своего кулдауна (кроме нехватки энергии); своя атака снимает и слезает с дерева',
+    '/find — список всех бойцов: 🏥 сначала те, кто в больничке, затем 🐰 те, кто в чулане, затем 🌳 те, кто на дереве (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (уровни 1-9 по 100 опыта каждый, дальше каждый следующий на 10% дороже предыдущего: 110, 121, 133...; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100, +3 за успешный /fuck); сила также даёт +5 к максимуму ХП за очко, выносливость — +1 к максимуму энергии за очко',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
     '/kuniAlia — попытка получить бафф +50% уклонение от /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
