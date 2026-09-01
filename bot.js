@@ -582,6 +582,7 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('horns', 'Tamasvi_Vamp', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('claws', 'Tenek_82', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('tapki', 'Original_Pofig', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('katana', 'GiviTata', 'human', NULL, NULL)").run();
 // One-time (per boot, but INSERT OR IGNORE so it never overwrites a
 // known_users row already populated live from a real message — see the
 // main message handler) backfill for /find: known_users only starts
@@ -1693,6 +1694,18 @@ const WEAPON_DEFS = {
   // 3 independent 20% procs (stun/scare/throw) — none of that lives in
   // this static def since it's time-based, not a fixed property.
   tapki: { name: 'тапки', instrumental: 'тапками', accusative: 'тапки', multiplier: 0.7, emoji: '🥿' },
+  // Катана — 3 fully independent swings per /kick instead of one (0.4x/
+  // 0.4x/0.8x, see performKatanaSwing + the weapon.key === 'katana'
+  // branch in performKick), for the price of a single energy/cooldown
+  // spend. multiplier here (0.4) is only a flat single-swing fallback —
+  // read by performKickGoblin (fighting goblins/orcs falls back to one
+  // normal swing, no combo) and by the NaN-guard precedent every other
+  // no-fixed-multiplier weapon above already follows. Also the only
+  // weapon with a DEFENSIVE passive: whoever currently holds it has a
+  // 25% chance to block any incoming attack outright, /kick or /fuck —
+  // see tryKatanaBlock, checked on both the generic swing path and this
+  // weapon's own combo.
+  katana: { name: 'катана', instrumental: 'катаной', accusative: 'катану', multiplier: 0.4, emoji: '🗡️' },
 };
 
 // Claws' own flavor line on a landed hit (see the weapon.key === 'claws'
@@ -1862,6 +1875,134 @@ function isScaredOf(userId, ofUserId) {
   db.prepare('UPDATE user_health SET scared_of_user_id = NULL, scared_until = NULL WHERE user_id = ?').run(userId);
   return false;
 }
+
+// Катана's passive defense (see WEAPON_DEFS.katana) — whoever currently
+// holds it gets a 25% chance to block ANY incoming attack outright,
+// regardless of how it would've otherwise resolved (even a nat-100).
+// Checked wherever an attack is about to land on defenderId — the
+// generic /kick swing path, performKatanaSwing's own combo, and /fuck's
+// success branch.
+const KATANA_BLOCK_CHANCE = 0.25;
+function tryKatanaBlock(defenderId) {
+  const holds = getWeaponsFor('human', defenderId).some((w) => w.weapon_key === 'katana');
+  if (!holds) return false;
+  return Math.random() < KATANA_BLOCK_CHANCE;
+}
+
+// Катана's 3-swing combo (see WEAPON_DEFS.katana and the weapon.key ===
+// 'katana' branch in performKick, which calls this once per segment).
+// Deliberately a near-copy of performKick's own single-swing body — same
+// opposed roll, same katana-block check, same crit/injury/XP — just
+// parametrized by this swing's own damage multiplier and index (for the
+// "N/3" in its message), and trimmed of two things a normal swing has
+// that would be awkward to repeat 3x: no nat-0 fumble-drop, and a
+// knockout here skips the steal-offer buttons and instant duel-end check
+// (still floors health/hospitalizes/mutes via damageHuman as normal —
+// just no follow-up UI). Returns the target's resulting health (for the
+// caller's "stop early if downed" check), or null if the swing missed,
+// was dodged, or was blocked.
+async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel, targetLabel, attackerStats, attackerInjury, segmentMultiplier, swingIndex) {
+  const roll = Math.floor(Math.random() * 101);
+  let success;
+  let dodgedByDefender = false;
+  let attackerScore = null;
+  let defenderScore = null;
+  if (roll === 100) {
+    success = true;
+  } else if (roll === 0) {
+    success = false;
+  } else {
+    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
+    const targetInjury = getUserInjury(target.id);
+    const targetStats = getStats(target.id);
+    const dodgeBuffBonus = getHitThreshold(target.id) - 50;
+    const defendDodgeBonus = isDefending(target.id) ? DEFEND_DODGE_BONUS : 0;
+    const defenderRoll = Math.floor(Math.random() * 101);
+    defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
+    success = attackerScore > defenderScore;
+    dodgedByDefender = !success;
+  }
+
+  let blockedByKatana = false;
+  if (success) {
+    blockedByKatana = tryKatanaBlock(target.id);
+    if (blockedByKatana) success = false;
+  }
+
+  const outcome = blockedByKatana ? '🗡️ заблокировано катаной!' : roll === 0 ? '❌ неудачно' : dodgedByDefender ? '🌀 уворот!' : '✅ удачно';
+  const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
+  await bot.sendMessage(
+    chatId,
+    `${actorLabel} — удар ${swingIndex}/3 катаной по ${targetLabel} ${outcome}: ${roll}/100${scoreText}`,
+    threadOpts(msgLike)
+  ).catch(() => {});
+  if (!success) return null;
+
+  combatLockouts.set(attacker.id, Date.now());
+
+  const strengthFactor = 1 + attackerStats.strength * STRENGTH_DAMAGE_PER_POINT;
+  const armInjuryFactor = attackerInjury === 'arm' ? ARM_INJURY_DAMAGE_MULT : 1;
+  const defendFactor = isDefending(target.id) ? (1 - DEFEND_DAMAGE_REDUCTION) : 1;
+
+  const targetHealthBefore = getUserHealth(target.id);
+  let targetHealthAfter;
+  if (roll === 100) {
+    targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
+    await bot.sendMessage(
+      chatId,
+      `💯 СОКРУШИТЕЛЬНЫЙ УДАР! ${actorLabel} сносит ${targetLabel} всё здоровье разом (${targetHealthBefore.health} -> ${targetHealthAfter})!`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+  } else {
+    const rawDmg = Math.floor(Math.random() * 20) + 1;
+    const dmg = Math.round(rawDmg * segmentMultiplier * strengthFactor * armInjuryFactor * defendFactor);
+    targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
+    await bot.sendMessage(
+      chatId,
+      `🗡️ Урон ${targetLabel}: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter})`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+  }
+
+  const isCrit = roll >= getCritThreshold(attacker.id);
+  if (isCrit) {
+    recordCrit(attacker.id);
+  }
+  const xpGain = roll === 100 ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
+  ensureStatsRow(attacker.id);
+  db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
+  if (roll !== 100 && isCrit) {
+    const injuryType = pick(['arm', 'leg', 'head']);
+    const healMinutes = applyInjury(target.id, injuryType);
+    recordInjuryDealt(attacker.id);
+    const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
+    await bot.sendMessage(
+      chatId,
+      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
+      threadOpts(msgLike)
+    ).catch(() => {});
+  }
+
+  if (targetHealthAfter === 0) {
+    if (isHospitalized(target.id)) {
+      await bot.sendMessage(
+        chatId,
+        `🏥 ${targetLabel} без сознания и попадает в больничку (−1 монета из кошелька) — недоступен для удара, пока не наберёт ${HOSPITAL_EXIT_HEALTH} ХП (или сам не решит атаковать раньше, если наберётся хотя бы ${HOSPITAL_MIN_DISCHARGE_HEALTH} ХП).`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    } else {
+      await bot.sendMessage(
+        chatId,
+        `😵 ${targetLabel} без сознания, но денег на больничку нет — остаётся на улице, замьючен(а) на 30 мин (не может атаковать).`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    }
+  }
+
+  return targetHealthAfter;
+}
+
+const KATANA_SEGMENT_MULTIPLIERS = [0.4, 0.4, 0.8];
 
 // Больничка protection — lazily read, same check-and-clear idiom as
 // isHidden. A player counts as hospitalized only while BOTH a non-NULL
@@ -2143,6 +2284,8 @@ bot.onText(/\/me\b/, (msg) => {
       lines.push(`${def.emoji} ${slotTag} — ${def.name}: урон ×${def.multiplier} (осталось ${formatExpire(row.expiresAt)})`);
     } else if (row.weapon_key === 'carrot') {
       lines.push(`${def.emoji} ${slotTag} — ${def.name}: случайное место попадания, от лечения до мгновенного нокаута`);
+    } else if (row.weapon_key === 'katana') {
+      lines.push(`${def.emoji} ${slotTag} — ${def.name}: 3 независимых удара за один /kick (0.4x/0.4x/0.8x); 25% блок любой атаки по тебе, включая /fuck`);
     } else {
       lines.push(`${def.emoji} ${slotTag} — ${def.name}: урон ×${def.multiplier}`);
     }
@@ -3094,6 +3237,20 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   }
   consumeEnergy(attacker.id);
 
+  // Катана — 3 fully independent swings (own roll, own crit/injury/XP
+  // each) for this single energy/cooldown spend, instead of the usual
+  // one. See performKatanaSwing; stops early if a swing floors the
+  // target so the combo can't keep hitting a downed opponent.
+  if (weapon.key === 'katana') {
+    for (let i = 0; i < KATANA_SEGMENT_MULTIPLIERS.length; i++) {
+      const healthAfter = await performKatanaSwing(
+        chatId, msgLike, attacker, target, actorLabel, targetLabel, attackerStats, attackerInjury, KATANA_SEGMENT_MULTIPLIERS[i], i + 1
+      );
+      if (healthAfter === 0) break;
+    }
+    return;
+  }
+
   const bodyPart = weapon.key === 'knuckles' ? 'по голове' : pick(PVP_BODY_PARTS);
   const roll = Math.floor(Math.random() * 101);
 
@@ -3124,7 +3281,15 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     dodgedByDefender = !success;
   }
 
-  const outcome = roll === 0 ? '❌ неудачно' : dodgedByDefender ? '🌀 уворот!' : '✅ удачно';
+  // Катана's passive block (see tryKatanaBlock) — only rolled if the hit
+  // would otherwise land, since there's nothing to block on a miss/dodge.
+  let blockedByKatana = false;
+  if (success) {
+    blockedByKatana = tryKatanaBlock(target.id);
+    if (blockedByKatana) success = false;
+  }
+
+  const outcome = blockedByKatana ? '🗡️ заблокировано катаной!' : roll === 0 ? '❌ неудачно' : dodgedByDefender ? '🌀 уворот!' : '✅ удачно';
   const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
   await bot.sendMessage(
     chatId,
@@ -3853,7 +4018,11 @@ bot.onText(/\/fuck\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
   consumeEnergy(msg.from.id, FUCK_ENERGY_COST);
 
   const outcomeRoll = Math.random();
-  if (outcomeRoll < FUCK_SUCCESS_CHANCE) {
+  if (outcomeRoll < FUCK_SUCCESS_CHANCE && tryKatanaBlock(target.id)) {
+    // Катана's passive block also covers a would-be-successful /fuck —
+    // see tryKatanaBlock. Energy's already spent either way.
+    await bot.sendMessage(msg.chat.id, `🗡️ ${targetLabel} блокирует катаной — ${actorLabel} остаётся ни с чем.`, threadOpts(msg)).catch(() => {});
+  } else if (outcomeRoll < FUCK_SUCCESS_CHANCE) {
     const paralysisMinutes = rollFuckParalysisMinutes();
     const until = Math.floor(Date.now() / 1000) + paralysisMinutes * 60;
     db.prepare('UPDATE user_health SET paralyzed_until = ? WHERE user_id = ?').run(until, target.id);
@@ -5205,6 +5374,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/tree — залезть на дерево и спрятаться от /kick на 5 минут; доступно только текущему владельцу когтей Лимы; тратит 1 энергию, без своего кулдауна (кроме нехватки энергии); своя атака снимает и слезает с дерева',
     '/piss_tapki — доступно только текущему владельцу тапок: превращает их в ссаные тапки на 10 минут, потом сами возвращаются в обычные; тратит 1 энергию, кулдаун 20 мин',
+    'Катана (см. /me) — не как обычное оружие: один /kick катаной это 3 независимых удара подряд (0.4x/0.4x/0.8x, каждый со своим шансом попасть/крит/травму) за ту же 1 энергию и тот же кулдаун; плюс пока катана у тебя в руках — 25% шанс заблокировать вообще любую атаку по тебе, даже нат-100 и даже /fuck',
     '/find — список всех бойцов: 🏥 сначала те, кто в больничке, затем 🐰 те, кто в чулане, затем 🌳 те, кто на дереве (с оставшимся временем), затем ⚔️ остальные',
     '/levelup точность|сила|ловкость|выносливость — тратит 1 очко характеристики (уровни 1-9 по 100 опыта каждый, дальше каждый следующий на 10% дороже предыдущего: 110, 121, 133...; опыт: +1 за удачный удар, +5 за крит, +15 за 100/100, +3 за успешный /fuck); сила также даёт +5 к максимуму ХП за очко, выносливость — +1 к максимуму энергии за очко',
     '/kuniFun — попытка получить бафф +50% крит на /kick, 10 мин (50% шанс успеха; тратит 2 энергии в любом случае; кулдаун = 10 мин в любом случае)',
