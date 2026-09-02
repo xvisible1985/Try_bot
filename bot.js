@@ -1384,7 +1384,14 @@ function resolveDuelTimeout(duel) {
 // via the `type` field on each monster object.
 const MONSTER_TYPES = {
   goblin: {
-    names: ['Грызль', 'Шнырь', 'Куцехвост', 'Плюгаш', 'Костолом', 'Гниляк', 'Хрящ', 'Дрызга', 'Мозгоглод', 'Бормотун'],
+    // 30 names — comfortably above нашествие's max of 20 goblins, so
+    // monsterName's "name + number" cycling (see its own comment) never
+    // actually triggers in practice.
+    names: [
+      'Грызль', 'Шнырь', 'Куцехвост', 'Плюгаш', 'Костолом', 'Гниляк', 'Хрящ', 'Дрызга', 'Мозгоглод', 'Бормотун',
+      'Сопляк', 'Гнилозуб', 'Косоглаз', 'Плешак', 'Шелудяк', 'Дохляк', 'Кривоног', 'Слюнтяй', 'Пучеглаз', 'Мозгляк',
+      'Шмыгай', 'Дристун', 'Гнилушка', 'Кривозуб', 'Косорук', 'Вонючка', 'Гадёныш', 'Хиляк', 'Плюгавец', 'Шкварок',
+    ],
     maxHealth: 60,
     maxEnergy: 20,
     stats: { accuracy: 3, strength: 1, agility: 5, endurance: 0 },
@@ -1393,7 +1400,12 @@ const MONSTER_TYPES = {
     coinsRange: [3, 10],
   },
   orc: {
-    names: ['Груб', 'Кровосек', 'Мясоруб', 'Клык', 'Рёва', 'Черепомёт', 'Дубина', 'Хрипун', 'Секач', 'Ломастер'],
+    // 20 names — 4x нашествие's max of 5 orcs, same margin idea as
+    // goblin's own pool above.
+    names: [
+      'Груб', 'Кровосек', 'Мясоруб', 'Клык', 'Рёва', 'Черепомёт', 'Дубина', 'Хрипун', 'Секач', 'Ломастер',
+      'Костодав', 'Кровопуск', 'Мордоворот', 'Хребтолом', 'Кишкодёр', 'Живодёр', 'Костоглод', 'Черепков', 'Кулак', 'Секирщик',
+    ],
     maxHealth: 120,
     maxEnergy: 35,
     stats: { accuracy: 2, strength: 7, agility: 2, endurance: 3 },
