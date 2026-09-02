@@ -4481,13 +4481,23 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
     ).catch(() => {});
   } else {
     const rawDmg = Math.floor(Math.random() * 20) + 1;
-    // Defense in depth on top of every WEAPON_DEFS entry now carrying a
-    // multiplier: an undefined one here would silently turn into NaN
-    // damage, which permanently corrupts goblin.health to NaN (immortal,
-    // shows "NaN ХП" in /goblins) rather than crashing loudly — exactly
-    // what happened before carrot/dildo got their fallback multiplier.
+    // weapon.multiplier || 1 defends against one specific known source of
+    // NaN damage (an undefined multiplier) — but that's a symptom-level
+    // guard, not a structural one: any OTHER future path that feeds a
+    // non-number into this formula would corrupt goblin.health to NaN the
+    // same way, and NaN is uniquely dangerous here because every existing
+    // health check (`<= 0` for dead, `> 0` for alive) silently returns
+    // false against it — the goblin becomes simultaneously "not dead"
+    // (goblinTick never stops swinging it, /goblins never shows 💀) and
+    // "not alive" (checkGoblinRaidCleared's `.some(g => g.health > 0)`
+    // treats it as already gone, so the raid ends around it) — orphaned,
+    // unkillable, and untargetable all at once. This exact bug hit
+    // "Грызль" in production. The real fix is a hard backstop at the one
+    // place health is actually written: whatever produced dmg, force the
+    // result back to a real, killable number.
     const dmg = Math.round(rawDmg * (weapon.multiplier || 1) * strengthFactor * armInjuryFactor);
     goblin.health = Math.max(0, goblin.health - dmg);
+    if (!Number.isFinite(goblin.health)) goblin.health = 0;
     await bot.sendMessage(
       chatId,
       `💥 Урон ${goblin.name}: ${dmg} (${healthBefore} -> ${goblin.health})`,
