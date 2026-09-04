@@ -583,6 +583,7 @@ db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, o
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('claws', 'Tenek_82', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('tapki', 'Original_Pofig', 'human', NULL, NULL)").run();
 db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('katana', 'GiviTata', 'human', NULL, NULL)").run();
+db.prepare("INSERT OR IGNORE INTO weapon_ownership (weapon_key, seed_username, owner_type, owner_user_id, owner_username) VALUES ('murrsword', 'MurrmeLADY', 'human', NULL, NULL)").run();
 // One-time (per boot, but INSERT OR IGNORE so it never overwrites a
 // known_users row already populated live from a real message — see the
 // main message handler) backfill for /find: known_users only starts
@@ -2019,6 +2020,11 @@ const WEAPON_DEFS = {
   // see tryKatanaBlock, checked on both the generic swing path and this
   // weapon's own combo.
   katana: { name: 'катана', instrumental: 'катаной', accusative: 'катану', multiplier: 0.4, emoji: '🗡️' },
+  // Флат ×2 multiplier, plus a 5% proc specifically on a landed groin
+  // hit (see the weapon.key === 'murrsword' block in performKick) —
+  // gated on the player's own chosen body part, so it never fires on an
+  // untargeted or elsewhere-aimed swing.
+  murrsword: { name: 'Муррмеч', instrumental: 'Муррмечом', accusative: 'Муррмеч', multiplier: 2, emoji: '⚔️' },
 };
 
 // Claws' own flavor line on a landed hit (see the weapon.key === 'claws'
@@ -3867,6 +3873,15 @@ async function performKick(chatId, msgLike, attacker, target, slot, bodyPartKey)
     const beforeShave = targetHealthAfter;
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, 10);
     await bot.sendMessage(chatId, `🪓😳 ${actorLabel} топором нечаянно побрил ${targetLabel} лобок! Ещё −10 ХП (${beforeShave} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
+  }
+
+  if (weapon.key === 'murrsword' && effectiveBodyPartKey === 'groin' && Math.random() < 0.05) {
+    // Flat, unmodified extra damage — same "guaranteed bonus effect"
+    // idiom as axe's shave above, just gated on the hit actually landing
+    // in the groin specifically (not just held-while-aiming-elsewhere).
+    const beforeCut = targetHealthAfter;
+    targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, 10);
+    await bot.sendMessage(chatId, `⚔️😱 ${actorLabel} Муррмечом отсекает ${targetLabel} член! Ещё −10 ХП (${beforeCut} -> ${targetHealthAfter})`, threadOpts(msgLike)).catch(() => {});
   }
 
   if (weapon.key === 'claws') {
