@@ -1309,6 +1309,12 @@ const DEFEND_DAMAGE_REDUCTION = 0.4; // incoming graduated damage ×(1 - 0.4); d
 // but arrived at continuously instead of via a separate threshold.
 const COEFFICIENT_DIFF_DIVISOR = 50; // diff of 50 (a solid, clearly-won exchange) -> coefficient 1.0
 const COEFFICIENT_MAX = 2.5;
+// A razor-thin win (diff just above 0) would otherwise round the whole
+// damage formula down to a literal 0 — "landed a hit" that visibly did
+// nothing. Floors any WINNING roll's coefficient here instead of letting
+// it trail off near zero; a genuine miss/dodge (diff <= 0) still gets
+// coefficient 0 exactly, untouched by this floor.
+const COEFFICIENT_MIN = 0.3;
 // Crit is now "won the exchange by a wide margin" instead of "rolled
 // high in isolation" — same kuniFun/kuniTama relative offsets as before
 // (-6/-3), just applied to the new base of 80 instead of the old 90.
@@ -1745,7 +1751,7 @@ async function resolveMonsterSwing(monster, targetUserId) {
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
     const diff = attackerScore - defenderScore;
-    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    coefficient = diff > 0 ? Math.min(COEFFICIENT_MAX, Math.max(COEFFICIENT_MIN, diff / COEFFICIENT_DIFF_DIVISOR)) : 0;
     isCrit = diff >= CRIT_DIFF_THRESHOLD; // monsters don't have kuni buffs to shift this
   }
   const success = coefficient > 0;
@@ -1773,7 +1779,7 @@ async function resolveMonsterSwing(monster, targetUserId) {
   } else {
     const strengthFactor = 1 + def.stats.strength * STRENGTH_DAMAGE_PER_POINT;
     const rawDmg = randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX);
-    const dmg = Math.round(rawDmg * coefficient * bodyPartDef.dmgMult * strengthFactor * defendFactor); // club multiplier is 1
+    const dmg = Math.max(1, Math.round(rawDmg * coefficient * bodyPartDef.dmgMult * strengthFactor * defendFactor)); // club multiplier is 1; any landed hit still deals at least 1
     after = damageHuman(targetUserId, goblinRaid.chatId, null, dmg);
     await bot.sendMessage(
       goblinRaid.chatId,
@@ -2234,7 +2240,7 @@ async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel,
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
     const diff = attackerScore - defenderScore;
-    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    coefficient = diff > 0 ? Math.min(COEFFICIENT_MAX, Math.max(COEFFICIENT_MIN, diff / COEFFICIENT_DIFF_DIVISOR)) : 0;
     isCrit = diff >= getCritThreshold(attacker.id);
   }
   let success = coefficient > 0;
@@ -2276,7 +2282,7 @@ async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel,
   } else {
     const rawDmg = randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX);
     const bodyDmgMult = bodyPartDef ? bodyPartDef.dmgMult : 1;
-    const dmg = Math.round(rawDmg * coefficient * segmentMultiplier * bodyDmgMult * strengthFactor * armInjuryFactor * defendFactor);
+    const dmg = Math.max(1, Math.round(rawDmg * coefficient * segmentMultiplier * bodyDmgMult * strengthFactor * armInjuryFactor * defendFactor)); // any landed swing still deals at least 1
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
     await bot.sendMessage(
       chatId,
@@ -3647,7 +3653,7 @@ async function performKick(chatId, msgLike, attacker, target, slot, bodyPartKey)
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
     const diff = attackerScore - defenderScore;
-    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    coefficient = diff > 0 ? Math.min(COEFFICIENT_MAX, Math.max(COEFFICIENT_MIN, diff / COEFFICIENT_DIFF_DIVISOR)) : 0;
     isCrit = diff >= getCritThreshold(attacker.id);
   }
   let success = coefficient > 0;
@@ -3820,7 +3826,7 @@ async function performKick(chatId, msgLike, attacker, target, slot, bodyPartKey)
       ? randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX)
       : randIntInclusive(BARE_HAND_DMG_MIN, BARE_HAND_DMG_MAX);
     const bodyDmgMult = bodyPartDef ? bodyPartDef.dmgMult : 1;
-    const dmg = Math.round(rawDmg * coefficient * weapon.multiplier * bodyDmgMult * strengthFactor * armInjuryFactor * defendFactor);
+    const dmg = Math.max(1, Math.round(rawDmg * coefficient * weapon.multiplier * bodyDmgMult * strengthFactor * armInjuryFactor * defendFactor)); // any landed hit still deals at least 1
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
     await bot.sendMessage(
       chatId,
@@ -4691,7 +4697,7 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot, bodyPa
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + monsterDef.stats.agility * AGILITY_DODGE_PER_POINT;
     const diff = attackerScore - defenderScore;
-    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    coefficient = diff > 0 ? Math.min(COEFFICIENT_MAX, Math.max(COEFFICIENT_MIN, diff / COEFFICIENT_DIFF_DIVISOR)) : 0;
     isCrit = diff >= getCritThreshold(attacker.id);
   }
   const success = coefficient > 0;
@@ -4746,7 +4752,7 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot, bodyPa
       ? randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX)
       : randIntInclusive(BARE_HAND_DMG_MIN, BARE_HAND_DMG_MAX);
     const bodyDmgMult = bodyPartDef ? bodyPartDef.dmgMult : 1;
-    const dmg = Math.round(rawDmg * coefficient * (weapon.multiplier || 1) * bodyDmgMult * strengthFactor * armInjuryFactor);
+    const dmg = Math.max(1, Math.round(rawDmg * coefficient * (weapon.multiplier || 1) * bodyDmgMult * strengthFactor * armInjuryFactor)); // any landed hit still deals at least 1
     goblin.health = Math.max(0, goblin.health - dmg);
     if (!Number.isFinite(goblin.health)) goblin.health = 0;
     await bot.sendMessage(
