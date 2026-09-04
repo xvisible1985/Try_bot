@@ -1301,6 +1301,77 @@ const DEFEND_ENERGY_COST = 2;
 const DEFEND_DODGE_BONUS = 25;      // added to the defender's opposed-roll score, on top of everything else
 const DEFEND_DAMAGE_REDUCTION = 0.4; // incoming graduated damage ×(1 - 0.4); does NOT apply to nat-100/carrot-ass/axe-shave
 
+// Coefficient-based damage (replaces the old binary success/fail + flat
+// 1-20 roll): the margin between the two opposed totals becomes a
+// damage multiplier instead of just a yes/no gate. diff <= 0 means the
+// attacker didn't out-roll the defender at all — coefficient floors at
+// 0, i.e. a clean miss/dodge, same end result as the old binary "fail"
+// but arrived at continuously instead of via a separate threshold.
+const COEFFICIENT_DIFF_DIVISOR = 50; // diff of 50 (a solid, clearly-won exchange) -> coefficient 1.0
+const COEFFICIENT_MAX = 2.5;
+// Crit is now "won the exchange by a wide margin" instead of "rolled
+// high in isolation" — same kuniFun/kuniTama relative offsets as before
+// (-6/-3), just applied to the new base of 80 instead of the old 90.
+// See getCritThreshold below.
+const CRIT_DIFF_THRESHOLD = 80;
+
+// Base damage ranges (see performKick/performKickGoblin/
+// resolveMonsterSwing/performKatanaSwing) — deliberately much lower than
+// the old flat 1-20 roll, since the coefficient above can now multiply
+// it up to 2.5x on a big enough margin; keeping the old range would let
+// a strong weapon on a crushing hit one-shot most of a 100-HP pool.
+const BARE_HAND_DMG_MIN = 2;
+const BARE_HAND_DMG_MAX = 8;
+const WEAPON_BASE_DMG_MIN = 4; // before weapon.multiplier is applied
+const WEAPON_BASE_DMG_MAX = 12;
+
+// Aimed body parts (see the /kick format below) — hitMod shifts the
+// attacker's opposed-roll total (see resolveOpposedRoll), dmgMult scales
+// the final damage, and critEffect says what a crit (diff >= the
+// threshold above) does to the target on THIS body part specifically,
+// instead of the old flat pick(['arm','leg','head']):
+//   'random'       — same random arm/leg/head pick as before (the
+//                     untargeted/chest default)
+//   'guaranteed:X' — always injury type X (arm/leg/head), never rolled
+//   'choke'        — stuns via the existing stunned_until column (bat's
+//                     30% proc and soiled tapki's own stun reuse the same
+//                     mechanic) rather than a new column/table
+//   'stun_always'  — same stun, but fires on ANY landed hit, not gated
+//                     behind the crit margin at all (see performKick's
+//                     own call site)
+//   'energy_drain' — an instant one-time energy loss, no lingering status
+//   'none'         — flavor only, no mechanical effect (жопа — the
+//                     existing carrot/dildo "ass" branches are already
+//                     the comedic high-risk spot; a second debuff here
+//                     would be piling on)
+const BODY_PARTS = {
+  head:    { label: 'голову',  accusative: 'голову',  keywords: ['h', 'голова', 'гол', 'башка'],       hitMod: -20, dmgMult: 1.5, critEffect: 'guaranteed:head' },
+  neck:    { label: 'шею',     accusative: 'шею',     keywords: ['n', 'шея'],                            hitMod: -25, dmgMult: 1.0, critEffect: 'choke' },
+  chest:   { label: 'грудь',   accusative: 'грудь',   keywords: ['c', 'грудь', 'грудина'],               hitMod: 0,   dmgMult: 1.0, critEffect: 'random' },
+  stomach: { label: 'живот',   accusative: 'живот',   keywords: ['s', 'живот', 'пузо'],                  hitMod: 10,  dmgMult: 1.0, critEffect: 'energy_drain' },
+  arm:     { label: 'руку',    accusative: 'руку',    keywords: ['a', 'рука', 'руки'],                   hitMod: 5,   dmgMult: 0.8, critEffect: 'guaranteed:arm' },
+  leg:     { label: 'ногу',    accusative: 'ногу',    keywords: ['l', 'нога', 'ноги'],                   hitMod: 5,   dmgMult: 0.8, critEffect: 'guaranteed:leg' },
+  ass:     { label: 'жопу',    accusative: 'жопу',    keywords: ['b', 'жопа', 'попа', 'зад'],            hitMod: 15,  dmgMult: 0.7, critEffect: 'none' },
+  groin:   { label: 'пах',     accusative: 'пах',     keywords: ['g', 'пах', 'промежность'],             hitMod: -15, dmgMult: 1.0, critEffect: 'stun_always' },
+};
+const NECK_STUN_MINUTES = 2;
+const GROIN_STUN_MINUTES = 2;
+const STOMACH_ENERGY_DRAIN = 3;
+
+// Parses the free-text body-part argument (from /kick's own parsing —
+// see its onText below) against BODY_PARTS' keyword lists, case- and
+// trim-insensitive. Returns a BODY_PARTS key, or null if it's not a
+// recognized body part at all (caller then treats the whole token as
+// the target instead — see /kick's parsing).
+function resolveBodyPart(text) {
+  if (!text) return null;
+  const needle = text.trim().toLowerCase();
+  for (const [key, def] of Object.entries(BODY_PARTS)) {
+    if (def.keywords.includes(needle)) return key;
+  }
+  return null;
+}
+
 // 20-minute чулан lockout for anyone who actually lands a hit (see
 // /hide below) — in-memory, same idiom as hideCooldowns/pvpCooldowns,
 // doesn't need to survive a restart.
@@ -1644,30 +1715,46 @@ async function resolveMonsterSwing(monster, targetUserId) {
   const targetInjury = getUserInjury(targetUserId);
   const targetStats = getStats(targetUserId);
 
+  // Monsters don't deliberately aim (no player choosing a body part) —
+  // each swing just picks a fresh random one from BODY_PARTS, so the
+  // hitMod/dmgMult/critEffect variety still applies, same as a human's
+  // own targeted attack would on the receiving end (the target here IS
+  // human, unlike performKickGoblin's monster-target case, so the full
+  // crit-effect set — choke/energy-drain/guaranteed injury/stun —
+  // applies for real).
+  const bodyPartKeys = Object.keys(BODY_PARTS);
+  const bodyPartKey = bodyPartKeys[Math.floor(Math.random() * bodyPartKeys.length)];
+  const bodyPartDef = BODY_PARTS[bodyPartKey];
+
   const roll = Math.floor(Math.random() * 101);
-  let success;
-  let dodged = false;
+  let coefficient = 0;
+  let isCrit = false;
+  let natHundred = false;
   let attackerScore = null;
   let defenderScore = null;
   if (roll === 100) {
-    success = true;
+    natHundred = true;
+    coefficient = COEFFICIENT_MAX;
+    isCrit = true;
   } else if (roll === 0) {
-    success = false;
+    // coefficient stays 0
   } else {
-    attackerScore = roll + def.stats.accuracy * ACCURACY_PER_POINT;
+    attackerScore = roll + def.stats.accuracy * ACCURACY_PER_POINT + bodyPartDef.hitMod;
     const dodgeBuffBonus = getHitThreshold(targetUserId) - 50;
     const defendDodgeBonus = isDefending(targetUserId) ? DEFEND_DODGE_BONUS : 0;
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
-    success = attackerScore > defenderScore;
-    dodged = !success;
+    const diff = attackerScore - defenderScore;
+    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    isCrit = diff >= CRIT_DIFF_THRESHOLD; // monsters don't have kuni buffs to shift this
   }
+  const success = coefficient > 0;
 
-  const outcome = roll === 0 ? '❌ неудачно' : dodged ? '🌀 уворот!' : '✅ удачно';
+  const outcome = roll === 0 ? '❌ неудачно' : !success ? '🌀 уворот!' : natHundred ? '💯 СОКРУШИТЕЛЬНЫЙ УДАР!' : isCrit ? '💥 КРИТ!' : '✅ удачно';
   const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
   const sent = await bot.sendMessage(
     goblinRaid.chatId,
-    `${def.emoji} ${monster.name} бьёт ${targetLabel} ${def.weaponText} ${outcome}: ${roll}/100${scoreText}`,
+    `${def.emoji} ${monster.name} бьёт ${targetLabel} ${def.weaponText} в ${bodyPartDef.accusative} ${outcome}: ${roll}/100${scoreText}`,
     chatOpts
   ).catch(() => null);
   if (sent) goblinMessageIds.set(sent.message_id, monster.id);
@@ -1676,7 +1763,7 @@ async function resolveMonsterSwing(monster, targetUserId) {
   const defendFactor = isDefending(targetUserId) ? (1 - DEFEND_DAMAGE_REDUCTION) : 1;
   const before = getUserHealth(targetUserId);
   let after;
-  if (roll === 100) {
+  if (natHundred) {
     after = damageHuman(targetUserId, goblinRaid.chatId, null, before.health);
     await bot.sendMessage(
       goblinRaid.chatId,
@@ -1685,14 +1772,40 @@ async function resolveMonsterSwing(monster, targetUserId) {
     ).catch(() => {});
   } else {
     const strengthFactor = 1 + def.stats.strength * STRENGTH_DAMAGE_PER_POINT;
-    const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * strengthFactor * defendFactor); // club multiplier is 1
+    const rawDmg = randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX);
+    const dmg = Math.round(rawDmg * coefficient * bodyPartDef.dmgMult * strengthFactor * defendFactor); // club multiplier is 1
     after = damageHuman(targetUserId, goblinRaid.chatId, null, dmg);
     await bot.sendMessage(
       goblinRaid.chatId,
       `💥 Урон ${targetLabel}: ${dmg} (${before.health} -> ${after})`,
       chatOpts
     ).catch(() => {});
+  }
+
+  if (!natHundred && isCrit) {
+    const critEffect = bodyPartDef.critEffect;
+    if (critEffect === 'choke') {
+      const stunnedUntil = Math.floor(Date.now() / 1000) + NECK_STUN_MINUTES * 60;
+      db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, targetUserId);
+      await bot.sendMessage(goblinRaid.chatId, `🤕 Критический удар в шею! ${targetLabel} задыхается — оглушён(а) на ${NECK_STUN_MINUTES} мин.`, chatOpts).catch(() => {});
+    } else if (critEffect === 'energy_drain') {
+      db.prepare('UPDATE user_health SET energy = MAX(0, energy - ?) WHERE user_id = ?').run(STOMACH_ENERGY_DRAIN, targetUserId);
+      await bot.sendMessage(goblinRaid.chatId, `🤕 Критический удар в живот! ${targetLabel} теряет ${STOMACH_ENERGY_DRAIN} энергии от боли.`, chatOpts).catch(() => {});
+    } else if (critEffect !== 'none') {
+      const injuryType = critEffect.startsWith('guaranteed:') ? critEffect.slice('guaranteed:'.length) : pick(['arm', 'leg', 'head']);
+      const healMinutes = applyInjury(targetUserId, injuryType);
+      const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
+      await bot.sendMessage(
+        goblinRaid.chatId,
+        `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
+        chatOpts
+      ).catch(() => {});
+    }
+  }
+  if (success && bodyPartDef.critEffect === 'stun_always') {
+    const stunnedUntil = Math.floor(Date.now() / 1000) + GROIN_STUN_MINUTES * 60;
+    db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, targetUserId);
+    await bot.sendMessage(goblinRaid.chatId, `🤕 Удар в пах! ${targetLabel} скрючился(-ась) от боли — оглушён(а) на ${GROIN_STUN_MINUTES} мин.`, chatOpts).catch(() => {});
   }
 
   if (after === 0) {
@@ -1944,14 +2057,17 @@ function getUserHealth(userId) {
   return db.prepare('SELECT health, max_health, energy, max_energy FROM user_health WHERE user_id = ?').get(userId);
 }
 
-// Base crit/injury threshold is 90 (see /kick below). An active kuniFun
-// buff lowers it to 84 (+50% crit chance, ~1.54x), kuniTama to 87 (+25%,
-// ~1.27x). crit_mult is only ever 1.5 or 1.25, so >= 1.5 disambiguates them.
+// Base crit threshold is CRIT_DIFF_THRESHOLD (80 — a margin on the
+// opposed roll, see resolveOpposedRoll, not a roll-in-isolation anymore).
+// An active kuniFun buff lowers it by 6 (to 74), kuniTama by 3 (to 77) —
+// same relative offsets the old 90/84/87 roll-threshold used, just
+// applied to the new base. crit_mult is only ever 1.5 or 1.25, so >= 1.5
+// disambiguates them.
 function getCritThreshold(userId) {
   const now = Math.floor(Date.now() / 1000);
   const row = db.prepare('SELECT crit_mult, crit_until FROM buffs WHERE user_id = ?').get(userId);
-  if (row && row.crit_until > now) return row.crit_mult >= 1.5 ? 84 : 87;
-  return 90;
+  if (row && row.crit_until > now) return row.crit_mult >= 1.5 ? CRIT_DIFF_THRESHOLD - 6 : CRIT_DIFF_THRESHOLD - 3;
+  return CRIT_DIFF_THRESHOLD;
 }
 
 // Base hit threshold is 50 (see /kick below). A dodge buff on the
@@ -2095,35 +2211,45 @@ function tryKatanaBlock(defenderId) {
 // just no follow-up UI). Returns the target's resulting health (for the
 // caller's "stop early if downed" check), or null if the swing missed,
 // was dodged, or was blocked.
-async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel, targetLabel, attackerStats, attackerInjury, segmentMultiplier, swingIndex) {
+async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel, targetLabel, attackerStats, attackerInjury, segmentMultiplier, swingIndex, bodyPartKey) {
+  const bodyPartDef = bodyPartKey ? BODY_PARTS[bodyPartKey] : null;
   const roll = Math.floor(Math.random() * 101);
-  let success;
-  let dodgedByDefender = false;
+  let coefficient = 0;
+  let isCrit = false;
+  let natHundred = false;
   let attackerScore = null;
   let defenderScore = null;
   if (roll === 100) {
-    success = true;
+    natHundred = true;
+    coefficient = COEFFICIENT_MAX;
+    isCrit = true;
   } else if (roll === 0) {
-    success = false;
+    // coefficient stays 0
   } else {
-    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
+    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT + (bodyPartDef ? bodyPartDef.hitMod : 0) - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
     const targetInjury = getUserInjury(target.id);
     const targetStats = getStats(target.id);
     const dodgeBuffBonus = getHitThreshold(target.id) - 50;
     const defendDodgeBonus = isDefending(target.id) ? DEFEND_DODGE_BONUS : 0;
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
-    success = attackerScore > defenderScore;
-    dodgedByDefender = !success;
+    const diff = attackerScore - defenderScore;
+    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    isCrit = diff >= getCritThreshold(attacker.id);
   }
+  let success = coefficient > 0;
 
   let blockedByKatana = false;
   if (success) {
     blockedByKatana = tryKatanaBlock(target.id);
-    if (blockedByKatana) success = false;
+    if (blockedByKatana) {
+      success = false;
+      coefficient = 0;
+      isCrit = false;
+    }
   }
 
-  const outcome = blockedByKatana ? '🗡️ заблокировано катаной!' : roll === 0 ? '❌ неудачно' : dodgedByDefender ? '🌀 уворот!' : '✅ удачно';
+  const outcome = blockedByKatana ? '🗡️ заблокировано катаной!' : roll === 0 ? '❌ неудачно' : !success ? '🌀 уворот!' : natHundred ? '💯 СОКРУШИТЕЛЬНЫЙ УДАР!' : isCrit ? '💥 КРИТ!' : '✅ удачно';
   const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
   await bot.sendMessage(
     chatId,
@@ -2140,7 +2266,7 @@ async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel,
 
   const targetHealthBefore = getUserHealth(target.id);
   let targetHealthAfter;
-  if (roll === 100) {
+  if (natHundred) {
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, targetHealthBefore.health);
     await bot.sendMessage(
       chatId,
@@ -2148,8 +2274,9 @@ async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel,
       threadOpts(msgLike)
     ).catch(() => {});
   } else {
-    const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * segmentMultiplier * strengthFactor * armInjuryFactor * defendFactor);
+    const rawDmg = randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX);
+    const bodyDmgMult = bodyPartDef ? bodyPartDef.dmgMult : 1;
+    const dmg = Math.round(rawDmg * coefficient * segmentMultiplier * bodyDmgMult * strengthFactor * armInjuryFactor * defendFactor);
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
     await bot.sendMessage(
       chatId,
@@ -2158,23 +2285,39 @@ async function performKatanaSwing(chatId, msgLike, attacker, target, actorLabel,
     ).catch(() => {});
   }
 
-  const isCrit = roll >= getCritThreshold(attacker.id);
   if (isCrit) {
     recordCrit(attacker.id);
   }
-  const xpGain = roll === 100 ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
+  const xpGain = natHundred ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
   ensureStatsRow(attacker.id);
   db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
-  if (roll !== 100 && isCrit) {
-    const injuryType = pick(['arm', 'leg', 'head']);
-    const healMinutes = applyInjury(target.id, injuryType);
-    recordInjuryDealt(attacker.id);
-    const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
-    await bot.sendMessage(
-      chatId,
-      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
-      threadOpts(msgLike)
-    ).catch(() => {});
+  if (!natHundred && isCrit) {
+    const critEffect = bodyPartDef ? bodyPartDef.critEffect : 'random';
+    if (critEffect === 'none') {
+      // жопа — no mechanical effect, matches performKick's own precedent.
+    } else if (critEffect === 'choke') {
+      const stunnedUntil = Math.floor(Date.now() / 1000) + NECK_STUN_MINUTES * 60;
+      db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+      await bot.sendMessage(chatId, `🤕 Критический удар в шею! ${targetLabel} задыхается — оглушён(а) на ${NECK_STUN_MINUTES} мин.`, threadOpts(msgLike)).catch(() => {});
+    } else if (critEffect === 'energy_drain') {
+      db.prepare('UPDATE user_health SET energy = MAX(0, energy - ?) WHERE user_id = ?').run(STOMACH_ENERGY_DRAIN, target.id);
+      await bot.sendMessage(chatId, `🤕 Критический удар в живот! ${targetLabel} теряет ${STOMACH_ENERGY_DRAIN} энергии от боли.`, threadOpts(msgLike)).catch(() => {});
+    } else {
+      const injuryType = critEffect.startsWith('guaranteed:') ? critEffect.slice('guaranteed:'.length) : pick(['arm', 'leg', 'head']);
+      const healMinutes = applyInjury(target.id, injuryType);
+      recordInjuryDealt(attacker.id);
+      const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
+      await bot.sendMessage(
+        chatId,
+        `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+    }
+  }
+  if (success && bodyPartDef && bodyPartDef.critEffect === 'stun_always') {
+    const stunnedUntil = Math.floor(Date.now() / 1000) + GROIN_STUN_MINUTES * 60;
+    db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+    await bot.sendMessage(chatId, `🤕 Удар в пах! ${targetLabel} скрючился(-ась) от боли — оглушён(а) на ${GROIN_STUN_MINUTES} мин.`, threadOpts(msgLike)).catch(() => {});
   }
 
   if (targetHealthAfter === 0) {
@@ -3273,7 +3416,7 @@ bot.onText(/\/give\b(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
 // (just .message_thread_id), and {id, username, firstName} attacker/
 // target descriptors.
 // since a button click has no such thing for the clicker.
-async function performKick(chatId, msgLike, attacker, target, slot) {
+async function performKick(chatId, msgLike, attacker, target, slot, bodyPartKey) {
   const actorLabel = attacker.username ? `@${attacker.username}` : attacker.firstName;
   const targetLabel = target.username ? `@${target.username}` : target.firstName;
 
@@ -3438,56 +3581,76 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
   if (weapon.key === 'katana') {
     for (let i = 0; i < KATANA_SEGMENT_MULTIPLIERS.length; i++) {
       const healthAfter = await performKatanaSwing(
-        chatId, msgLike, attacker, target, actorLabel, targetLabel, attackerStats, attackerInjury, KATANA_SEGMENT_MULTIPLIERS[i], i + 1
+        chatId, msgLike, attacker, target, actorLabel, targetLabel, attackerStats, attackerInjury, KATANA_SEGMENT_MULTIPLIERS[i], i + 1, bodyPartKey
       );
       if (healthAfter === 0) break;
     }
     return;
   }
 
-  const bodyPart = weapon.key === 'knuckles' ? 'по голове' : pick(PVP_BODY_PARTS);
+  // Кастет always connects with the head regardless of what was aimed
+  // at — a physical property of the weapon, not a player choice.
+  const effectiveBodyPartKey = weapon.key === 'knuckles' ? 'head' : bodyPartKey;
+  const bodyPartDef = effectiveBodyPartKey ? BODY_PARTS[effectiveBodyPartKey] : null;
+  const bodyPartText = bodyPartDef ? `в ${bodyPartDef.accusative}` : pick(PVP_BODY_PARTS);
+
   const roll = Math.floor(Math.random() * 101);
 
-  // Opposed roll: the attacker's d100 (+ точность, - head-injury penalty)
-  // against the defender's own independent d100 (+ any active dodge buff
-  // from getHitThreshold mapped onto this scale, + ловкость, - leg-injury
-  // penalty) — the hit lands only if the attacker's side comes out
-  // strictly ahead. A natural 100 always lands regardless (undodgeable
+  // Opposed roll: the attacker's d100 (+ точность + this body part's own
+  // hitMod, - head-injury penalty) against the defender's own
+  // independent d100 (+ any active dodge buff from getHitThreshold
+  // mapped onto this scale, + ловкость, - leg-injury penalty). Unlike
+  // the old binary success/fail, the MARGIN by which the attacker comes
+  // out ahead becomes a damage coefficient (see COEFFICIENT_DIFF_DIVISOR/
+  // COEFFICIENT_MAX above) instead of just a yes/no gate — diff <= 0
+  // still means a clean miss/dodge (coefficient floors at 0), same end
+  // result as the old binary "fail", just arrived at continuously. A
+  // natural 100 always lands at max coefficient regardless (undodgeable
   // "СОКРУШИТЕЛЬНЫЙ УДАР"), a natural 0 always misses regardless
   // (guaranteed fumble) — neither extreme goes through the comparison.
-  let success;
-  let dodgedByDefender = false;
+  let coefficient = 0;
+  let isCrit = false;
+  let natHundred = false;
+  let natZero = false;
   let attackerScore = null;
   let defenderScore = null;
   if (roll === 100) {
-    success = true;
+    natHundred = true;
+    coefficient = COEFFICIENT_MAX;
+    isCrit = true;
   } else if (roll === 0) {
-    success = false;
+    natZero = true;
   } else {
-    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
+    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT + (bodyPartDef ? bodyPartDef.hitMod : 0) - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
     const targetInjury = getUserInjury(target.id);
     const targetStats = getStats(target.id);
     const dodgeBuffBonus = getHitThreshold(target.id) - 50; // active kuni dodge buff, mapped onto this scale
     const defendDodgeBonus = isDefending(target.id) ? DEFEND_DODGE_BONUS : 0;
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + dodgeBuffBonus + defendDodgeBonus + targetStats.agility * AGILITY_DODGE_PER_POINT - (targetInjury === 'leg' ? LEG_INJURY_DODGE_PENALTY : 0);
-    success = attackerScore > defenderScore;
-    dodgedByDefender = !success;
+    const diff = attackerScore - defenderScore;
+    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    isCrit = diff >= getCritThreshold(attacker.id);
   }
+  let success = coefficient > 0;
 
   // Катана's passive block (see tryKatanaBlock) — only rolled if the hit
   // would otherwise land, since there's nothing to block on a miss/dodge.
   let blockedByKatana = false;
   if (success) {
     blockedByKatana = tryKatanaBlock(target.id);
-    if (blockedByKatana) success = false;
+    if (blockedByKatana) {
+      success = false;
+      coefficient = 0;
+      isCrit = false;
+    }
   }
 
-  const outcome = blockedByKatana ? '🗡️ заблокировано катаной!' : roll === 0 ? '❌ неудачно' : dodgedByDefender ? '🌀 уворот!' : '✅ удачно';
+  const outcome = blockedByKatana ? '🗡️ заблокировано катаной!' : natZero ? '❌ неудачно' : !success ? '🌀 уворот!' : natHundred ? '💯 СОКРУШИТЕЛЬНЫЙ УДАР!' : isCrit ? '💥 КРИТ!' : '✅ удачно';
   const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
   await bot.sendMessage(
     chatId,
-    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPart} ${outcome}: ${roll}/100${scoreText}`,
+    `${actorLabel} — ударить ${targetLabel} ${weapon.text} ${bodyPartText} ${outcome}: ${roll}/100${scoreText}`,
     threadOpts(msgLike)
   ).catch(() => {});
   if (!success) {
@@ -3497,9 +3660,9 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     // pickup listener in the main message handler hands it to whoever
     // writes next (see "--- Filter muted & animal messages ---" below).
     // Bare-handed misses (weapon.key === null) have nothing to drop.
-    // Losing the opposed roll (dodgedByDefender) has nothing to drop —
-    // only a genuine natural-0 fumble does.
-    if (roll === 0 && weapon.key) {
+    // Losing the opposed roll (coefficient 0 but not a genuine roll-0)
+    // has nothing to drop — only a genuine natural-0 fumble does.
+    if (natZero && weapon.key) {
       if (weapon.instanceKey.startsWith('knife:')) {
         const knifeId = Number(weapon.instanceKey.slice('knife:'.length));
         db.prepare('UPDATE owned_knives SET owner_user_id = ?, owner_username = NULL, is_dropped = 1, dropped_chat_id = ? WHERE id = ?').run(attacker.id, chatId, knifeId);
@@ -3631,8 +3794,15 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
       await bot.sendMessage(chatId, `🍆 ${actorLabel} огревает ${targetLabel} оранжевым дилдо по голове! Урон: ${dmg} (${targetHealthBefore.health} -> ${targetHealthAfter}). Оглушён на 2 минуты!`, threadOpts(msgLike)).catch(() => {});
     }
   } else {
-    const rawDmg = Math.floor(Math.random() * 20) + 1;
-    const dmg = Math.round(rawDmg * weapon.multiplier * strengthFactor * armInjuryFactor * defendFactor);
+    // Coefficient-scaled damage (see COEFFICIENT_DIFF_DIVISOR/MAX above):
+    // base roll is much lower than the old flat 1-20 now that coefficient
+    // and bodyPartDef.dmgMult both multiply on top of it — see
+    // BARE_HAND_DMG_*/WEAPON_BASE_DMG_* for the reasoning.
+    const rawDmg = weapon.key
+      ? randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX)
+      : randIntInclusive(BARE_HAND_DMG_MIN, BARE_HAND_DMG_MAX);
+    const bodyDmgMult = bodyPartDef ? bodyPartDef.dmgMult : 1;
+    const dmg = Math.round(rawDmg * coefficient * weapon.multiplier * bodyDmgMult * strengthFactor * armInjuryFactor * defendFactor);
     targetHealthAfter = damageHuman(target.id, chatId, target.username || target.firstName, dmg);
     await bot.sendMessage(
       chatId,
@@ -3764,37 +3934,61 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
     }
   }
 
-  // isCrit is tracked for stats independent of whether the injury/steal
-  // side effects below actually fire — a nat-100 or carrot's "ass" is
-  // still a critical hit in spirit, just with its own devastating effect
-  // already covering the "this was a big deal" side effects, so the
-  // usual injury+steal block is suppressed for those two specifically.
-  const isCrit = roll >= getCritThreshold(attacker.id);
+  // isCrit was already decided up in the opposed-roll block (diff >=
+  // getCritThreshold, or a flat true on nat-100) — tracked for stats
+  // independent of whether the injury/steal side effects below actually
+  // fire, since a nat-100 or carrot's "ass" is still a critical hit in
+  // spirit, just with its own devastating effect already covering the
+  // "this was a big deal" side effects, so the usual injury+steal block
+  // is suppressed for those two specifically.
   if (isCrit) {
     recordCrit(attacker.id);
   }
   // Every landed, non-dodged hit earns XP, tiered by outcome — this is
   // reached unconditionally (unlike the injury+steal block below, which
-  // stays gated on roll !== 100 and the carrot-ass suppression).
-  const xpGain = roll === 100 ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
+  // stays gated on !natHundred and the carrot-ass suppression).
+  const xpGain = natHundred ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
   ensureStatsRow(attacker.id);
   db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
-  if (roll !== 100 && isCrit && !(weapon.key === 'carrot' && hole === 'ass' && !assClenched)) {
-    // Кастет always connects with the head — on a crit that means a
-    // guaranteed 'head' injury instead of the usual random arm/leg/head
-    // pick, unlike every other weapon here.
-    const injuryType = weapon.key === 'knuckles' ? 'head' : pick(['arm', 'leg', 'head']);
-    const healMinutes = applyInjury(target.id, injuryType);
-    recordInjuryDealt(attacker.id);
-    const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
-    await bot.sendMessage(
-      chatId,
-      `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
-      threadOpts(msgLike)
-    ).catch(() => {});
-    if (weapon.key === 'horns') {
-      await bot.sendMessage(chatId, `🐂 ${actorLabel} насадила ${targetLabel} на рога!`, threadOpts(msgLike)).catch(() => {});
+  if (!natHundred && isCrit && !(weapon.key === 'carrot' && hole === 'ass' && !assClenched)) {
+    // Кастет forced effectiveBodyPartKey to 'head' up above, so its own
+    // "always guaranteed head injury" property falls out of this for
+    // free via BODY_PARTS.head's critEffect — no separate special case
+    // needed here anymore.
+    const critEffect = bodyPartDef ? bodyPartDef.critEffect : 'random';
+    if (critEffect === 'none') {
+      // жопа crit — no mechanical effect on top of its already-reduced
+      // damage; carrot/dildo's own "ass" branches are the comedic
+      // high-risk spot already, a second debuff here would pile on.
+    } else if (critEffect === 'choke') {
+      const stunnedUntil = Math.floor(Date.now() / 1000) + NECK_STUN_MINUTES * 60;
+      db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+      await bot.sendMessage(chatId, `🤕 Критический удар в шею! ${targetLabel} задыхается — оглушён(а) на ${NECK_STUN_MINUTES} мин.`, threadOpts(msgLike)).catch(() => {});
+    } else if (critEffect === 'energy_drain') {
+      db.prepare('UPDATE user_health SET energy = MAX(0, energy - ?) WHERE user_id = ?').run(STOMACH_ENERGY_DRAIN, target.id);
+      await bot.sendMessage(chatId, `🤕 Критический удар в живот! ${targetLabel} теряет ${STOMACH_ENERGY_DRAIN} энергии от боли.`, threadOpts(msgLike)).catch(() => {});
+    } else {
+      const injuryType = critEffect.startsWith('guaranteed:') ? critEffect.slice('guaranteed:'.length) : pick(['arm', 'leg', 'head']);
+      const healMinutes = applyInjury(target.id, injuryType);
+      recordInjuryDealt(attacker.id);
+      const injuryName = injuryType === 'arm' ? 'рука' : injuryType === 'leg' ? 'нога' : 'голова';
+      await bot.sendMessage(
+        chatId,
+        `🤕 Критический удар! ${targetLabel} получить травму: ${injuryName} (на ${healMinutes} мин).`,
+        threadOpts(msgLike)
+      ).catch(() => {});
+      if (weapon.key === 'horns') {
+        await bot.sendMessage(chatId, `🐂 ${actorLabel} насадила ${targetLabel} на рога!`, threadOpts(msgLike)).catch(() => {});
+      }
     }
+  }
+
+  // Пах — unlike every other body part's effect, this fires on ANY
+  // landed hit, not gated behind the crit margin at all.
+  if (success && bodyPartDef && bodyPartDef.critEffect === 'stun_always') {
+    const stunnedUntil = Math.floor(Date.now() / 1000) + GROIN_STUN_MINUTES * 60;
+    db.prepare('UPDATE user_health SET stunned_until = ? WHERE user_id = ?').run(stunnedUntil, target.id);
+    await bot.sendMessage(chatId, `🤕 Удар в пах! ${targetLabel} скрючился(-ась) от боли — оглушён(а) на ${GROIN_STUN_MINUTES} мин.`, threadOpts(msgLike)).catch(() => {});
   }
 
   // Knockout weapon-steal offer — the only way to take a weapon off
@@ -3868,9 +4062,29 @@ async function performKick(chatId, msgLike, attacker, target, slot) {
 // pickWeaponForAttacker), falling back to bare-handed if that slot is
 // empty. match[1] is the slot digit, match[2] is the target text. All
 // the actual combat logic lives in performKick above.
-bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) => {
+// Body part is an optional aim: either a single letter GLUED directly
+// onto the slot digit (/kick1h — no space, most compact) or, with no
+// glued letter, the FIRST space-separated token after the command, as
+// either the same letter or a full Russian word/alias (/kick1 голова)
+// — see BODY_PARTS/resolveBodyPart above for the full keyword table.
+// Whichever form is used (or neither, for a random hit like before),
+// everything after that is the target exactly as before.
+bot.onText(/\/kick([1-3])?([hncsalbg])?(?!\w)(?:@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
   if (isPvpPaused()) return bot.sendMessage(msg.chat.id, '⛔ PvP-бои сейчас приостановлены.', threadOpts(msg)).catch(() => {});
   const slot = match[1] ? parseInt(match[1], 10) : 0;
+
+  let bodyPartKey = match[2] ? resolveBodyPart(match[2]) : null;
+  const restText = (match[3] || '').trim();
+  let targetText = restText;
+  if (!bodyPartKey && restText) {
+    const spaceIdx = restText.indexOf(' ');
+    const firstToken = spaceIdx === -1 ? restText : restText.slice(0, spaceIdx);
+    const maybePart = resolveBodyPart(firstToken);
+    if (maybePart) {
+      bodyPartKey = maybePart;
+      targetText = spaceIdx === -1 ? '' : restText.slice(spaceIdx + 1).trim();
+    }
+  }
 
   // Goblin resolution first (see /goblinraid above) — cheap and
   // synchronous, so it's checked before the human path's own
@@ -3887,12 +4101,12 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
       const goblinId = goblinMessageIds.get(msg.reply_to_message.message_id);
       if (goblinId) goblin = goblinRaid.goblins.get(goblinId);
     }
-    if (!goblin && match[2]) {
-      const name = match[2].replace(/^@/, '').trim().toLowerCase();
+    if (!goblin && targetText) {
+      const name = targetText.replace(/^@/, '').trim().toLowerCase();
       goblin = [...goblinRaid.goblins.values()].find((g) => g.name.toLowerCase() === name);
     }
     if (goblin) {
-      await performKickGoblin(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, goblin, slot);
+      await performKickGoblin(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, goblin, slot, bodyPartKey);
       return;
     }
   }
@@ -3909,8 +4123,8 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
       username: msg.reply_to_message.from.username,
       firstName: msg.reply_to_message.from.first_name,
     };
-  } else if (match[2]) {
-    const handle = match[2].replace(/^@/, '');
+  } else if (targetText) {
+    const handle = targetText.replace(/^@/, '');
     try {
       const chat = await bot.getChat('@' + handle);
       target = { id: chat.id, username: chat.username, firstName: chat.first_name };
@@ -3922,7 +4136,7 @@ bot.onText(/\/kick([1-3])?(?!\w)(?:@\w+)?(?:\s+@?(\S+))?/, async (msg, match) =>
     return;
   }
 
-  await performKick(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, target, slot);
+  await performKick(msg.chat.id, msg, { id: msg.from.id, username: msg.from.username, firstName: msg.from.first_name }, target, slot, bodyPartKey);
 });
 
 // /duel — explicit-consent 1v1 challenge (see activeDuels/pendingDuels
@@ -4351,7 +4565,7 @@ bot.onText(/\/goblins\b/i, (msg) => {
 // to user_health columns a goblin doesn't have) — only the weapon's flat
 // multiplier counts. XP/crit tracking for the attacker still applies in
 // full, same as fighting a human.
-async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
+async function performKickGoblin(chatId, msgLike, attacker, goblin, slot, bodyPartKey) {
   const actorLabel = attacker.username ? `@${attacker.username}` : attacker.firstName;
   const monsterDef = MONSTER_TYPES[goblin.type];
 
@@ -4436,24 +4650,35 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
   }
   consumeEnergy(attacker.id);
 
+  // Monsters have no injury system of their own, so a chosen body part
+  // only ever affects hitMod/dmgMult here — never a crit-effect (no
+  // choke/energy-drain/guaranteed-injury/stun against a goblin/orc/
+  // troll), matching the existing "no weapon procs against monsters"
+  // precedent.
+  const bodyPartDef = bodyPartKey ? BODY_PARTS[bodyPartKey] : null;
   const roll = Math.floor(Math.random() * 101);
-  let success;
-  let dodged = false;
+  let coefficient = 0;
+  let isCrit = false;
+  let natHundred = false;
   let attackerScore = null;
   let defenderScore = null;
   if (roll === 100) {
-    success = true;
+    natHundred = true;
+    coefficient = COEFFICIENT_MAX;
+    isCrit = true;
   } else if (roll === 0) {
-    success = false;
+    // coefficient stays 0
   } else {
-    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
+    attackerScore = roll + attackerStats.accuracy * ACCURACY_PER_POINT + (bodyPartDef ? bodyPartDef.hitMod : 0) - (attackerInjury === 'head' ? HEAD_INJURY_ACCURACY_PENALTY : 0);
     const defenderRoll = Math.floor(Math.random() * 101);
     defenderScore = defenderRoll + monsterDef.stats.agility * AGILITY_DODGE_PER_POINT;
-    success = attackerScore > defenderScore;
-    dodged = !success;
+    const diff = attackerScore - defenderScore;
+    coefficient = Math.min(COEFFICIENT_MAX, Math.max(0, diff) / COEFFICIENT_DIFF_DIVISOR);
+    isCrit = diff >= getCritThreshold(attacker.id);
   }
+  const success = coefficient > 0;
 
-  const outcome = roll === 0 ? '❌ неудачно' : dodged ? '🌀 уворот!' : '✅ удачно';
+  const outcome = roll === 0 ? '❌ неудачно' : !success ? '🌀 уворот!' : natHundred ? '💯 СОКРУШИТЕЛЬНЫЙ УДАР!' : isCrit ? '💥 КРИТ!' : '✅ удачно';
   const scoreText = attackerScore !== null ? ` (${Math.round(attackerScore)} против ${Math.round(defenderScore)})` : '';
   await bot.sendMessage(
     chatId,
@@ -4484,7 +4709,7 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
   const strengthFactor = 1 + attackerStats.strength * STRENGTH_DAMAGE_PER_POINT;
   const armInjuryFactor = attackerInjury === 'arm' ? ARM_INJURY_DAMAGE_MULT : 1;
   const healthBefore = goblin.health;
-  if (roll === 100) {
+  if (natHundred) {
     goblin.health = 0;
     await bot.sendMessage(
       chatId,
@@ -4492,22 +4717,18 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
       threadOpts(msgLike)
     ).catch(() => {});
   } else {
-    const rawDmg = Math.floor(Math.random() * 20) + 1;
-    // weapon.multiplier || 1 defends against one specific known source of
-    // NaN damage (an undefined multiplier) — but that's a symptom-level
-    // guard, not a structural one: any OTHER future path that feeds a
-    // non-number into this formula would corrupt goblin.health to NaN the
-    // same way, and NaN is uniquely dangerous here because every existing
-    // health check (`<= 0` for dead, `> 0` for alive) silently returns
-    // false against it — the goblin becomes simultaneously "not dead"
-    // (goblinTick never stops swinging it, /goblins never shows 💀) and
-    // "not alive" (checkGoblinRaidCleared's `.some(g => g.health > 0)`
-    // treats it as already gone, so the raid ends around it) — orphaned,
-    // unkillable, and untargetable all at once. This exact bug hit
-    // "Грызль" in production. The real fix is a hard backstop at the one
-    // place health is actually written: whatever produced dmg, force the
-    // result back to a real, killable number.
-    const dmg = Math.round(rawDmg * (weapon.multiplier || 1) * strengthFactor * armInjuryFactor);
+    // Coefficient-scaled damage (see COEFFICIENT_DIFF_DIVISOR/MAX and
+    // BARE_HAND_DMG_*/WEAPON_BASE_DMG_* above) — same formula as human
+    // PvP, just against the monster's fixed MONSTER_TYPES stats instead
+    // of getStats(). weapon.multiplier || 1 plus the final
+    // Number.isFinite backstop below still guard against goblin.health
+    // ever going NaN, whatever the source (this exact bug hit "Грызль"
+    // in production — see that fix's own commit for the full story).
+    const rawDmg = weapon.key
+      ? randIntInclusive(WEAPON_BASE_DMG_MIN, WEAPON_BASE_DMG_MAX)
+      : randIntInclusive(BARE_HAND_DMG_MIN, BARE_HAND_DMG_MAX);
+    const bodyDmgMult = bodyPartDef ? bodyPartDef.dmgMult : 1;
+    const dmg = Math.round(rawDmg * coefficient * (weapon.multiplier || 1) * bodyDmgMult * strengthFactor * armInjuryFactor);
     goblin.health = Math.max(0, goblin.health - dmg);
     if (!Number.isFinite(goblin.health)) goblin.health = 0;
     await bot.sendMessage(
@@ -4517,9 +4738,8 @@ async function performKickGoblin(chatId, msgLike, attacker, goblin, slot) {
     ).catch(() => {});
   }
 
-  const isCrit = roll >= getCritThreshold(attacker.id);
   if (isCrit) recordCrit(attacker.id);
-  const xpGain = roll === 100 ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
+  const xpGain = natHundred ? XP_PER_NAT100 : isCrit ? XP_PER_CRIT : XP_PER_HIT;
   ensureStatsRow(attacker.id);
   db.prepare('UPDATE pvp_stats SET xp = xp + ? WHERE user_id = ?').run(xpGain, attacker.id);
 
@@ -5607,7 +5827,8 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/restore — выпить эликсир здоровья: +100 ХП, не выше максимума',
     '/recharge — выпить эликсир энергии: полное восстановление',
     '/give @username — передать эликсир или оружие другому воину (с его подтверждением)',
-    '/kick @юзернейм (или ответом) — ударить подручными средствами; /kick1, /kick2, /kick3 — конкретным оружием по номеру слота (см. /me), если в слоте пусто — тоже подручными (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара; урон 1-20 × сила и множитель оружия, попадание зависит от точности, после попадания жертва может увернуться (базово 50%, зависит от её ловкости); критический удар — травма на 20-180 минут (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку), 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup; во время набега гоблинов (/goblinraid) им можно бить и их — см. /goblins)',
+    '/kick[слот][часть] [цель] — ударить; слот 1-3 = конкретное оружие (см. /me), без числа = голыми руками; часть — куда целиться (необязательно, не указал — бьёт куда попало): h/голова, n/шея, c/грудь, s/живот, a/рука, l/нога, b/жопа, g/пах — буква приклеивается к слоту без пробела (/kick1h) ИЛИ пишется словом/буквой отдельно (/kick1 голова); цель — @юзернейм/имя гоблина или ответ на сообщение. Пример: /kick2g @Vasya — оружие 2, в пах. (работает только в чате «Поединки»; нужно быть воином — и атакующему, и цели, см. /warrior; без ответного удара)',
+    '/kick — как рассчитывается удар: оба бросают d100 + свои бонусы (точность атакующего + модификатор части тела, ловкость/уворот жертвы) — РАЗНИЦА между бросками становится коэффициентом урона (0 = чистый промах/уворот, ~50 = обычный удачный удар, 100+ = коэфф ×2.5, потолок). Урон = база (голые руки 2-8, с оружием 4-12) × коэффициент × множитель оружия × множитель части тела × сила атакующего. Крит — при разнице ≥80 (кастет бьёт только в голову, всегда гарантированный крит-эффект туда). Части тела: голова −20 к попаданию/+50% урона/гарантированная травма головы; шея −25/база/оглушение на 2 мин; грудь 0/база/случайная травма (дефолт); живот +10/база/−3 энергии при крите; рука/нога +5/−20%/гарантированная травма руки или ноги; жопа +15/−30%/без эффекта; пах −15/база/оглушение на 2 мин при ЛЮБОМ попадании (не только крите). Травма — 20-180 минут (голова -10% точности, рука -10% урона, нога -10% уворота у пострадавшего — не блокирует атаку). 0 здоровья — попадает в больничку (недоступен для удара, регенерация ×2, пока не наберёт 30 ХП; может выйти раньше сам, атаковав) + если у жертвы было оружие, добивший получает кнопки забрать/оставить (при нескольких — выбор какое; сам захват — ещё 50/50, жертва может вцепиться и не отдать); тратит 1 энергию из 10, восстановление зависит от выносливости; пауза между ударами зависит от ловкости, действует отдельно на каждое оружие/на голые руки; ровно 100/100 — не увернуться, коэфф всегда максимальный, сразу сносит всю жизнь цели; ровно 0/100 с оружием в руке — роняет его, первый написавший в чат кроме тебя подбирает; удачный удар даёт опыт — см. /levelup; во время набега гоблинов (/goblinraid) им можно бить и их — см. /goblins',
     '/hide [часы] — спрятаться в чулане от /kick на N часов (по умолчанию 1); чулан вмещает только 5 человек — если он полон, новый прячущийся случайно выкидывает оттуда кого-то одного; тратит N энергии сразу, при недостатке энергии — отказ; своя атака снимает прятки и на 20 минут блокирует повторный /hide; сама команда — раз в 20 минут',
     '/tree — залезть на дерево и спрятаться от /kick на 5 минут; доступно только текущему владельцу когтей Лимы; тратит 1 энергию, без своего кулдауна (кроме нехватки энергии); своя атака снимает и слезает с дерева',
     '/piss_tapki — доступно только текущему владельцу тапок: превращает их в ссаные тапки на 10 минут, потом сами возвращаются в обычные; тратит 1 энергию, кулдаун 20 мин',
@@ -5625,7 +5846,7 @@ bot.onText(/\/helppvp\b/, (msg) => {
     '/goblinraid [уровень] — (админ) наслать набег вручную, по умолчанию «рейд». Уровни: разведка (2-5 гоблинов), рейд (5-10 гоблинов), атака (5-10 гоблинов + 1-2 орка), нашествие (10-20 гоблинов + 2-5 орков), тролль (см. ниже). Гоблин: 60 ХП, точность 3, уворот 5, сила 1, 20 энергии (максимум ударов), 3-10 монет. Орк: 120 ХП, точность 2, уворот 2, сила 7, выносливость 3, 35 энергии, 15-35 монет. Оба бьют раз в минуту (та же формула попадания/уворота, что и у /kick); 10% шанс, что вместо удара будет попытка /fuck (40% успеха, 10-40 мин паралича жертве). Плюс автонабеги: разведка выходит дважды в день, в случайный момент 08:00-12:00 и ещё раз 18:00-22:00 (15 минут — не зачистили, оставшиеся сбегают); ровно через 10 минут после конца каждой разведки — если зачистили, усиленная разведка ×1.5 (10 минут); если кто-то сбежал — случайно рейд (40%), атака (40%) или нашествие (20%), без ограничения по времени',
     '/goblinraid тролль (или тролленок) — (админ) отдельный одиночный босс, не смешивается с гоблинами/орками. Тролль: 1000 ХП, сила 15, регенерирует 10 ХП каждые 10 сек, бьёт сразу троих. Тролленок (слабее): 650 ХП, сила 8, регенерирует 5 ХП каждые 40 сек, бьёт сразу двоих. У обоих: точность 4, уворот 1, энергия бесконечная; бьёт раз в 30 сек (тот же 10% шанс /fuck вместо удара, что и у гоблинов); каждый 4-й удар вместо этого сносит чулан — все, кто там прятался, вылетают наружу; сбегает через 15 минут, если не убить. При нокауте — тот же 50%-шанс ограбить монеты, что у гоблина/орка (изначально 0 монет — всё, что при смерти достанется убийце, награблено за бой), плюс 50% шанс дополнительно вырвать у жертвы одно оружие (сам не пользуется — только своей дубиной; оружие падает в чат, забрать может кто угодно кроме самой жертвы)',
     '/goblins — список текущих гоблинов набега: ХП, энергия, кого бьют',
-    '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием) — тот же /kick, что и по игрокам: та же формула попадания/уворота и урон = множитель оружия × сила, только без травм и спецэффектов оружия (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены); убийство — все его 3-10 монет твои; попадание переключает агро гоблина на тебя',
+    '/kick <имя гоблина> (или ответом на его сообщение об ударе, или /kick1/2/3 конкретным оружием, части тела тоже работают — h/n/c/s/a/l/b/g) — тот же /kick, что и по игрокам: та же формула коэффициента от разницы бросков, только без травм/оглушений/спецэффектов частей тела (у гоблинов нет ни травм, ни энергии/статусов, под которые они заточены) — часть тела там влияет только на попадание и урон; убийство — все его монеты твои; попадание переключает агро гоблина на тебя',
   ].join('\n');
   bot.sendMessage(msg.chat.id, text, threadOpts(msg)).catch(() => {});
 });
