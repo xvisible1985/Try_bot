@@ -3008,7 +3008,25 @@ bot.onText(/\/pvpoff\b/i, async (msg) => {
 bot.onText(/\/pvpon\b/i, async (msg) => {
   if (!await isAdmin(msg)) return;
   db.prepare("INSERT OR REPLACE INTO bot_settings (key, value) VALUES ('pvp_paused', '0')").run();
-  bot.sendMessage(msg.chat.id, '✅ PvP-бои снова разрешены.', threadOpts(msg)).catch(() => {});
+  await bot.sendMessage(msg.chat.id, '✅ PvP-бои снова разрешены.', threadOpts(msg)).catch(() => {});
+  // Reminder card for the newer /kick syntax (body-part aiming) — sent
+  // every time PvP resumes, since that's exactly when people start
+  // typing /kick again and are most likely to have forgotten the format
+  // or never seen it (see the 2026-09-03 combat rework's own /helppvp
+  // entry for the full formula — this is just the command shape).
+  bot.sendMessage(
+    msg.chat.id,
+    [
+      '🗡️ Как бить: /kick[слот][часть] [цель]',
+      'слот — без числа: голыми руками; 1-3: конкретное оружие (см. /me)',
+      'часть (не обязательно, не указал — куда попало): h-голова n-шея c-грудь s-живот a-рука l-нога b-жопа g-пах',
+      'буква приклеивается к слоту без пробела (/kick1h), или пишется словом/буквой отдельно (/kick1 голова)',
+      'цель — @юзернейм/имя гоблина, или ответ на сообщение',
+      'Пример: /kick2g @Vasya — оружие 2, в пах',
+      'Подробнее — /helppvp',
+    ].join('\n'),
+    threadOpts(msg)
+  ).catch(() => {});
 });
 
 // /warrior — the only way to become eligible for /kick (see the
